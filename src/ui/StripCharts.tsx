@@ -23,7 +23,27 @@ function stripOpts(
     select: { show: false, left: 0, top: 0, width: 0, height: 0 },
     scales: {
       x: { time: false },
-      y: yRange ? { auto: false, range: yRange } : { auto: true },
+      y: yRange
+        ? { auto: false, range: yRange }
+        : {
+            auto: true,
+            // A constant series (e.g. aux iL at exactly io, or any flat signal
+            // right after a reset) collapses uPlot's y scale to [v, v]. Zero span
+            // makes the tick-increment underflow to ~1e-16, and numAxisSplits
+            // loops ~1e16 times filling an array → "Invalid array length". Pad any
+            // sub-epsilon span to a visible window around the value. This mirrors
+            // the same guard written for the autoZoom branch on the vo strip.
+            range: (_u, dMin, dMax) => {
+              if (!Number.isFinite(dMin) || !Number.isFinite(dMax)) return [0, 1]
+              if (dMax - dMin < 1e-6) {
+                const c = (dMin + dMax) / 2 || 0
+                const pad = Math.max(Math.abs(c) * 0.05, 0.5)
+                return [c - pad, c + pad]
+              }
+              const pad = (dMax - dMin) * 0.1
+              return [dMin - pad, dMax + pad]
+            },
+          },
     },
     axes: [
       { ...axisTheme, label: `sim time (${timeUnit})`, labelSize: 12, size: 36 },
@@ -59,33 +79,54 @@ export function StripCharts() {
     const tUnit = scn.timeDisplay.unit
     const tMul = scn.timeDisplay.mul
 
-    const yChart = mountChart(
-      yRef.current!,
-      (w, h) =>
-        stripOpts(
-          w,
-          h,
-          scn.y.label,
-          tUnit,
-          [
-            {
-              label: 'r',
-              stroke: seriesColors.setpoint,
-              width: 1.5,
-              dash: [6, 4],
-              value: (_u, v) => (v == null ? '—' : scn.y.fmt(v)),
-            },
-            {
-              label: 'y',
-              stroke: seriesColors.level,
-              width: 2,
-              value: (_u, v) => (v == null ? '—' : scn.y.fmt(v)),
-            },
-          ],
-          [scn.y.min, scn.y.max],
-        ),
-      [[], [], []],
-    )
+    const yOpts = (w: number, h: number) => {
+      const opts = stripOpts(
+        w,
+        h,
+        scn.y.label + (scn.y.autoZoom ? '  [auto-zoom]' : ''),
+        tUnit,
+        [
+          {
+            label: 'r',
+            stroke: seriesColors.setpoint,
+            width: 1.5,
+            dash: [6, 4],
+            value: (_u, v) => (v == null ? '—' : scn.y.fmt(v)),
+          },
+          {
+            label: 'y',
+            stroke: seriesColors.level,
+            width: 2,
+            value: (_u, v) => (v == null ? '—' : scn.y.fmt(v)),
+          },
+        ],
+        [scn.y.min, scn.y.max],
+      )
+      if (scn.y.autoZoom) {
+        // Oscilloscope-style: track the data (incl. the setpoint series, so
+        // both stay in frame), pad 15%, never tighter than minSpan, never
+        // beyond the scenario's absolute bounds.
+        const { minSpan } = scn.y.autoZoom
+        opts.scales!.y = {
+          auto: true,
+          range: (_u, dMin, dMax) => {
+            // Guard: with no data yet (scenario just switched) uPlot hands us
+            // null/±Infinity — feeding NaN back kills the whole chart.
+            if (!Number.isFinite(dMin) || !Number.isFinite(dMax)) {
+              return [scn.y.min, scn.y.max]
+            }
+            const mid = (dMin + dMax) / 2
+            const span = Math.max(dMax - dMin, minSpan) * 1.15
+            return [
+              Math.max(scn.y.min, mid - span / 2),
+              Math.min(scn.y.max, mid + span / 2),
+            ]
+          },
+        }
+      }
+      return opts
+    }
+    const yChart = mountChart(yRef.current!, yOpts, [[], [], []])
     const uChart = mountChart(
       uRef.current!,
       (w, h) =>

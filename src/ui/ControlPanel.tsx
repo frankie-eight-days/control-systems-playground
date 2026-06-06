@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { getController } from '../controllers/registry'
 import { getScenario } from '../scenarios/registry'
 import type { SliderSpec } from '../scenarios/types'
@@ -9,6 +10,10 @@ export function ControlPanel() {
   const s = useStore()
   const scn = getScenario(s.scenarioId)
   const ctlCfg = scn.controllers.find((c) => c.id === s.controllerId) ?? scn.controllers[0]
+  // Selected preset name → its description shown inline (tooltips get missed,
+  // and some presets are INTENTIONAL failures that must announce themselves).
+  const [activePreset, setActivePreset] = useState<string | null>(null)
+  const activeDesc = scn.presets.find((p) => p.name === activePreset)?.desc
 
   return (
     <div className="space-y-3 text-sm">
@@ -91,21 +96,30 @@ export function ControlPanel() {
               <button
                 key={p.name}
                 title={p.desc}
-                className="rounded bg-slate-800 px-2 py-1 text-left text-xs text-slate-200 hover:bg-slate-700"
+                className={`rounded px-2 py-1 text-left text-xs ${
+                  activePreset === p.name
+                    ? 'bg-sky-700 text-white'
+                    : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+                }`}
                 onClick={() => {
+                  setActivePreset(p.name)
                   if (p.set.controllerId && p.set.controllerId !== s.controllerId) {
                     s.setController(p.set.controllerId)
                   }
-                  const { controllerId: _cid, ctl, ...rest } = p.set
-                  s.set({ ...rest, ...(ctl ? { ctl: { ...ctl } } : {}) })
+                  const { controllerId: _cid, ctl, dist, ...rest } = p.set
+                  s.set({
+                    ...rest,
+                    ...(ctl ? { ctl: { ...ctl } } : {}),
+                    ...(dist ? { dist: { ...s.dist, ...dist } } : {}),
+                  })
                 }}
               >
                 {p.name}
               </button>
             ))}
           </div>
-          <p className="text-xs text-slate-500">
-            Hover a preset for what it demonstrates. Watch the Bode footer's PM react.
+          <p className="text-xs text-slate-400">
+            {activeDesc ?? 'Pick a preset — its description appears here. Watch the Bode PM react.'}
           </p>
         </Section>
       )}

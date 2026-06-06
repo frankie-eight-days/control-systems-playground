@@ -110,9 +110,11 @@ Each scenario teammate owns exactly one folder: `src/scenarios/<id>/`.
 2. Your `index.ts` must export the same symbol name the stub exports
    (e.g. `cruiseScenario`), typed `ScenarioDef`.
 3. Scenario-specific controllers (e.g. buck Type II/III) are DEFINED in your
-   folder and registered by calling `registerController(def)` from
-   `controllers/registry.ts` at the top of your `index.ts` (module load).
-   Their `response()` must describe the exact discrete law you simulate.
+   folder and registered by calling `registerController(def)` at the top of
+   your `index.ts` (module load). This is safe at any point of module
+   evaluation — the registry is import-cycle-proof (lazy `var` map; see the
+   comment in `controllers/registry.ts`). Their `response()` must describe
+   the exact discrete law you simulate.
 4. Use real units everywhere, SI internally; pick display units EEs expect
    (the y.fmt / noise.mul / timeDisplay / freqDisplay fields exist for this).
 5. Theory ↔ sim linkage is non-negotiable: your `PlantTheory` component must

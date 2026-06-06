@@ -71,8 +71,19 @@ export interface ScenarioDef {
   /** Bode sweep bounds in rad/s. */
   wSweep: [number, number]
 
-  /** Sensor/output signal: chart range, labels, formatting. */
-  y: { label: string; unit: string; min: number; max: number; fmt: (v: number) => string }
+  /** Sensor/output signal: chart range, labels, formatting.
+   *  autoZoom: oscilloscope-style y-axis — auto-range around the live data
+   *  with at least minSpan of span, instead of the fixed [min,max]. Use when
+   *  interesting deviations are tiny vs. the absolute scale (buck: mV on
+   *  volts). min/max still bound the zoom. */
+  y: {
+    label: string
+    unit: string
+    min: number
+    max: number
+    fmt: (v: number) => string
+    autoZoom?: { minSpan: number }
+  }
   setpoint: SliderSpec
   /** Actuator strip-chart title (command is always 0–100%). */
   uLabel: string
