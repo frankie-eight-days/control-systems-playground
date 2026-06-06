@@ -1,7 +1,10 @@
 import { rk4 } from './integrator'
+import { OnOffController } from './onoff'
 import { PID } from './pid'
 import { SeededNoise } from './noise'
 import { TankPlant, TANK, type TankDisturbances } from './plants/tank'
+
+export type ControllerType = 'pid' | 'onoff'
 
 /** Fixed physics timestep (simulated seconds). Never stretched — time
  *  acceleration runs MORE substeps per animation frame. */
@@ -17,10 +20,12 @@ export interface SimParams {
   running: boolean
   timeScale: number
   setpoint: number
+  controller: ControllerType
   kp: number
   ki: number
   kd: number
   wf: number
+  band: number // m, on/off hysteresis width Δ
   valve: number // 0..1
   noiseSigma: number // m, gaussian σ on the level sensor
 }
@@ -43,6 +48,7 @@ export interface History {
 export class SimEngine {
   readonly plant = new TankPlant()
   readonly pid = new PID()
+  readonly onoff = new OnOffController()
   private noise = new SeededNoise()
 
   x: number[] = [0.2, 0]
@@ -67,6 +73,7 @@ export class SimEngine {
     this.acc = 0
     this.sampleAcc = 0
     this.pid.reset()
+    this.onoff.reset()
     this.noise.reset()
     for (const k of Object.keys(this.history) as (keyof History)[]) this.history[k].length = 0
   }
@@ -98,7 +105,10 @@ export class SimEngine {
     // with the SATURATED command held over the step (zero-order hold).
     const yTrue = this.plant.output(this.x)
     this.yMeas = yTrue + (p.noiseSigma > 0 ? p.noiseSigma * this.noise.gauss() : 0)
-    this.u = this.pid.update(p.setpoint, this.yMeas, DT)
+    this.u =
+      p.controller === 'onoff'
+        ? this.onoff.update(p.setpoint, this.yMeas, p.band)
+        : this.pid.update(p.setpoint, this.yMeas, DT)
 
     const u = this.u
     this.x = rk4((x) => this.plant.deriv(x, u, d), this.x, DT)
@@ -123,9 +133,11 @@ export class SimEngine {
     h.sp.push(p.setpoint)
     h.y.push(this.yMeas)
     h.u.push(this.u)
-    h.pTerm.push(this.pid.terms.p)
-    h.iTerm.push(this.pid.terms.i)
-    h.dTerm.push(this.pid.terms.d)
+    // P/I/D decomposition only exists in PID mode; record zeros for on/off.
+    const pidMode = p.controller === 'pid'
+    h.pTerm.push(pidMode ? this.pid.terms.p : 0)
+    h.iTerm.push(pidMode ? this.pid.terms.i : 0)
+    h.dTerm.push(pidMode ? this.pid.terms.d : 0)
     if (h.t.length > MAX_SAMPLES) {
       const drop = h.t.length - MAX_SAMPLES
       for (const k of Object.keys(h) as (keyof History)[]) h[k].splice(0, drop)

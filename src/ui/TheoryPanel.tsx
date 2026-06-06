@@ -18,6 +18,8 @@ export function TheoryPanel() {
   const wf = useStore((s) => s.wf)
   const setpoint = useStore((s) => s.setpoint)
   const valve = useStore((s) => s.valve)
+  const controller = useStore((s) => s.controller)
+  const band = useStore((s) => s.band)
 
   const lin = useMemo(() => {
     const d = { valve }
@@ -67,29 +69,84 @@ export function TheoryPanel() {
         </p>
       </Section>
 
-      <Section title="Controller — parallel PID, derivative on measurement">
+      {controller === 'pid' ? (
+        <Section title="Controller — parallel PID, derivative on measurement">
+          <Tex
+            block
+            tex={`u = K_p e + K_i\\!\\int\\! e\\,d\\tau - K_d \\tfrac{d y_f}{dt},\\qquad C(s) = ${kp.toFixed(0)} + \\frac{${ki.toFixed(1)}}{s} + \\frac{${kd.toFixed(0)}\\,s}{${tf.toPrecision(2)}\\,s+1}`}
+          />
+          <p className="text-xs text-slate-400">
+            y<sub>f</sub> is the measurement low-passed at ω<sub>f</sub>={wf.toFixed(1)} rad/s.
+            Output saturates at 0–100% with back-calculation anti-windup. The strip chart shows
+            each term's contribution to u live.
+          </p>
+        </Section>
+      ) : (
+        <RelaySection setpoint={setpoint} valve={valve} band={band} />
+      )}
+
+      <Section title="Loop algebra (the Bode panel tabs)">
         <Tex
           block
-          tex={`u = K_p e + K_i\\!\\int\\! e\\,d\\tau - K_d \\tfrac{d y_f}{dt},\\qquad C(s) = ${kp.toFixed(0)} + \\frac{${ki.toFixed(1)}}{s} + \\frac{${kd.toFixed(0)}\\,s}{${tf.toPrecision(2)}\\,s+1}`}
+          tex={`L = C\\,G \\qquad T = \\frac{L}{1+L} \\qquad S = \\frac{1}{1+L}`}
         />
         <p className="text-xs text-slate-400">
-          y<sub>f</sub> is the measurement low-passed at ω<sub>f</sub>={wf.toFixed(1)} rad/s.
-          Output saturates at 0–100% with back-calculation anti-windup. The strip chart shows each
-          term's contribution to u live.
-        </p>
-      </Section>
-
-      <Section title="Loop">
-        <Tex block tex={`L(s) = C(s)\\,G(s)`} />
-        <p className="text-xs text-slate-400">
-          The Bode plot shows |L| and ∠L; stability is read from the phase margin at the 0 dB
-          (gain) crossover{' '}
-          <span className="text-green-400">(green line)</span> and gain margin at the −180°
-          crossover <span className="text-red-400">(red line)</span>. Rule of thumb: ζ ≈ PM/100, so
-          PM ≈ 60° gives a nicely damped response.
+          In dB the compensator and plant <em>add</em>: |L| = |C| + |G|. Where |L| ≫ 1, T ≈ 1
+          (output tracks setpoint) and S ≈ 1/L (disturbances crushed — the integrator makes S → 0
+          at DC). Where |L| ≪ 1, the loop does nothing: T ≈ L, S ≈ 1. All the action is at the
+          0 dB crossover: the phase margin there{' '}
+          <span className="text-green-400">(green line)</span> sets the closed-loop peaking in |T|
+          and the ringing you see in the level trace. Rule of thumb: ζ ≈ PM/100, T + S = 1 always.
         </p>
       </Section>
     </div>
+  )
+}
+
+/**
+ * Relay-mode theory with a LIVE limit-cycle prediction: rise/fall rates from
+ * the plant constants give the cycle period — go check it on the strip chart.
+ */
+function RelaySection({
+  setpoint,
+  valve,
+  band,
+}: {
+  setpoint: number
+  valve: number
+  band: number
+}) {
+  const qOut = engine.plant.outflow(setpoint, valve)
+  const rise = (TANK.qMax - qOut) / TANK.area // m/s, pump on
+  const fall = qOut / TANK.area // m/s, pump off
+  const period = rise > 0 && fall > 0 ? band / rise + band / fall : null
+
+  return (
+    <Section title="Controller — relay with hysteresis (thermostat)">
+      <Tex
+        block
+        tex={`u = \\begin{cases} 100\\% & e > ${(band / 2).toFixed(3)}\\text{ m} \\\\ 0\\% & e < -${(band / 2).toFixed(3)}\\text{ m} \\\\ \\text{hold} & \\text{otherwise} \\end{cases}`}
+      />
+      <p className="text-xs text-slate-400">
+        No equilibrium — the loop limit-cycles across the band Δ={band.toFixed(2)} m. Rates at
+        h₀: rise (pump on) ≈ {(rise * 1000).toFixed(1)} mm/s, fall (pump off) ≈{' '}
+        {(fall * 1000).toFixed(1)} mm/s, so the predicted period is
+      </p>
+      {period != null ? (
+        <Tex
+          block
+          tex={`T \\approx \\frac{\\Delta}{\\text{rise}} + \\frac{\\Delta}{\\text{fall}} = ${period.toFixed(1)}\\ \\text{s}`}
+        />
+      ) : (
+        <p className="text-xs text-red-400">
+          Pump can't both raise and lower the level here (valve closed or fully open) — no cycle.
+        </p>
+      )}
+      <p className="text-xs text-slate-400">
+        Check it against the strip chart. The real cycle overshoots the band slightly — the pump
+        lag τ<sub>p</sub> keeps flow coming after switching, the same lag that limits PID gains.
+      </p>
+    </Section>
   )
 }
 

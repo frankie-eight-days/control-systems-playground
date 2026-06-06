@@ -1,7 +1,37 @@
 import { engine } from '../state/engine'
 import { useStore } from '../state/store'
+import type { SimParams } from '../sim/loop'
 
 const SPEEDS = [1, 2, 5, 10, 25, 50, 100]
+
+/**
+ * One-click tuning examples. The marginal gain is exact theory: for this
+ * plant ∠L hits −180° at ω = 1/√(τ₁τ₂) ≈ 0.128 rad/s, and pure-I control
+ * reaches |L| = 1 there at Ki ≈ 16.8 — so 16.8 oscillates forever and 20
+ * grows until the pump saturates into a limit cycle.
+ */
+const PRESETS: { name: string; desc: string; params: Partial<SimParams> }[] = [
+  {
+    name: 'Well-damped',
+    desc: 'PI, PM ≈ 75° — clean approach, no overshoot to speak of',
+    params: { controller: 'pid', kp: 60, ki: 1.5, kd: 0, timeScale: 10 },
+  },
+  {
+    name: 'Underdamped',
+    desc: 'Too much Ki, PM ≈ 35° — overshoot and ringing',
+    params: { controller: 'pid', kp: 60, ki: 10, kd: 0, timeScale: 25 },
+  },
+  {
+    name: 'Marginal',
+    desc: 'Pure I at the critical gain, PM ≈ 0° — oscillates forever',
+    params: { controller: 'pid', kp: 0, ki: 16.8, kd: 0, timeScale: 50 },
+  },
+  {
+    name: 'Unstable',
+    desc: 'PM < 0 — grows until the pump saturates into a limit cycle',
+    params: { controller: 'pid', kp: 0, ki: 20, kd: 0, timeScale: 50 },
+  },
+]
 
 export function ControlPanel() {
   const s = useStore()
@@ -57,6 +87,69 @@ export function ControlPanel() {
         />
       </Section>
 
+      <Section title="Controller">
+        <div className="flex gap-1">
+          {(['pid', 'onoff'] as const).map((c) => (
+            <button
+              key={c}
+              className={`rounded px-3 py-1 text-xs font-semibold ${
+                s.controller === c
+                  ? 'bg-sky-600 text-white'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+              onClick={() => {
+                // fresh controller state on switch — no stale integrator bump
+                engine.pid.reset()
+                engine.onoff.reset()
+                s.set({ controller: c })
+              }}
+            >
+              {c === 'pid' ? 'PID' : 'On/Off + hysteresis'}
+            </button>
+          ))}
+        </div>
+        {s.controller === 'onoff' && (
+          <>
+            <Slider
+              label="Hysteresis band Δ"
+              value={s.band}
+              min={0.01}
+              max={0.5}
+              step={0.01}
+              unit="m"
+              fmt={(v) => v.toFixed(2)}
+              onChange={(v) => s.set({ band: v })}
+            />
+            <p className="text-xs text-slate-500">
+              The pump is either 0% or 100% — like a thermostat. Narrow the band for tighter
+              level control but faster pump cycling (real pumps hate that).
+            </p>
+          </>
+        )}
+      </Section>
+
+      {s.controller === 'pid' && (
+        <Section title="Tuning examples">
+          <div className="grid grid-cols-2 gap-1">
+            {PRESETS.map((p) => (
+              <button
+                key={p.name}
+                title={p.desc}
+                className="rounded bg-slate-800 px-2 py-1 text-left text-xs text-slate-200 hover:bg-slate-700"
+                onClick={() => s.set(p.params)}
+              >
+                {p.name}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-slate-500">
+            Stable → ringing → sustained oscillation → divergence. Watch PM on the Bode footer
+            walk down through 75° → 35° → 0° → negative as you click across.
+          </p>
+        </Section>
+      )}
+
+      {s.controller === 'pid' && (
       <Section title="PID gains">
         <Slider
           label="Kp  (proportional)"
@@ -99,6 +192,7 @@ export function ControlPanel() {
           onChange={(v) => s.set({ wf: v })}
         />
       </Section>
+      )}
 
       <Section title="Disturbances">
         <Slider

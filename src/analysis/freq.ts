@@ -49,15 +49,6 @@ export function dcGain(ss: StateSpace): number {
   return Number.isFinite(g) ? g : Infinity
 }
 
-export interface BodeData {
-  w: number[]
-  /** Open-loop |L| in dB, clamped at −200 to keep charts finite. */
-  magDb: number[]
-  /** Open-loop phase, degrees, unwrapped. */
-  phaseDeg: number[]
-  margins: Margins
-}
-
 export interface Margins {
   /** Gain-crossover frequency (|L| = 1), rad/s. Null if no crossover. */
   wgc: number | null
@@ -76,35 +67,132 @@ export interface PidGains {
   wf: number
 }
 
-/** Sweep L(jω) = C(jω)·G(jω) and extract stability margins. */
-export function bode(
+/** Closed-loop summary figures. */
+export interface ClosedLoopStats {
+  /** −3 dB closed-loop bandwidth of T, rad/s. Null if |T| never reaches −3 dB. */
+  wBw: number | null
+  /** Peak |T| in dB (resonant peaking — grows as PM shrinks). */
+  mtDb: number
+  /** Peak |S| in dB (worst-case disturbance amplification). */
+  msDb: number
+}
+
+/**
+ * Full frequency-response family over one log-ω sweep:
+ *   G  — plant (linearized)             C  — controller, with P/I/D parts
+ *   L  = C·G  open loop  →  margins     T  = L/(1+L)  closed loop (r → y)
+ *   S  = 1/(1+L)  sensitivity (output disturbance → y)
+ * In dB the buck-converter intuition holds exactly: |L| = |C| + |G|.
+ */
+export interface FreqAnalysis {
+  w: number[]
+  gMagDb: number[]
+  gPhaseDeg: number[]
+  cMagDb: number[]
+  pMagDb: (number | null)[]
+  iMagDb: (number | null)[]
+  dMagDb: (number | null)[]
+  lMagDb: number[]
+  lPhaseDeg: number[]
+  tMagDb: number[]
+  sMagDb: number[]
+  margins: Margins
+  closed: ClosedLoopStats
+}
+
+const db = (mag: number) => Math.max(-200, 20 * Math.log10(Math.max(mag, 1e-12)))
+
+export function freqAnalysis(
   ss: StateSpace,
   pid: PidGains,
   wMin = 1e-4,
   wMax = 1e3,
   nPoints = 600,
-): BodeData {
+): FreqAnalysis {
   const w: number[] = []
-  const magDb: number[] = []
-  const phaseDeg: number[] = []
+  const gMagDb: number[] = []
+  const gPhaseDeg: number[] = []
+  const cMagDb: number[] = []
+  const pMagDb: (number | null)[] = []
+  const iMagDb: (number | null)[] = []
+  const dMagDb: (number | null)[] = []
+  const lMagDb: number[] = []
+  const lPhaseDeg: number[] = []
+  const tMagDb: number[] = []
+  const sMagDb: number[] = []
+
   const logMin = Math.log10(wMin)
   const logMax = Math.log10(wMax)
+  const tf = 1 / pid.wf
+  const one = cx(1)
 
   for (let i = 0; i < nPoints; i++) {
     const wi = 10 ** (logMin + ((logMax - logMin) * i) / (nPoints - 1))
-    const L = cMul(plantResponse(ss, wi), pidResponse(pid.kp, pid.ki, pid.kd, pid.wf, wi))
+    const G = plantResponse(ss, wi)
+    const C = pidResponse(pid.kp, pid.ki, pid.kd, pid.wf, wi)
+    const L = cMul(G, C)
+    const onePlusL = cAdd(one, L)
+    const T = cDiv(L, onePlusL)
+    const S = cDiv(one, onePlusL)
+
     w.push(wi)
-    magDb.push(Math.max(-200, 20 * Math.log10(Math.max(cAbs(L), 1e-12))))
-    phaseDeg.push((cArg(L) * 180) / Math.PI)
+    gMagDb.push(db(cAbs(G)))
+    gPhaseDeg.push((cArg(G) * 180) / Math.PI)
+    cMagDb.push(db(cAbs(C)))
+    // Individual controller terms (null when the gain is off, so charts skip them)
+    pMagDb.push(pid.kp > 0 ? db(pid.kp) : null)
+    iMagDb.push(pid.ki > 0 ? db(pid.ki / wi) : null)
+    dMagDb.push(pid.kd > 0 ? db((pid.kd * wi) / Math.hypot(1, wi * tf)) : null)
+    lMagDb.push(db(cAbs(L)))
+    lPhaseDeg.push((cArg(L) * 180) / Math.PI)
+    tMagDb.push(db(cAbs(T)))
+    sMagDb.push(db(cAbs(S)))
   }
 
-  // Unwrap phase (remove ±360° jumps from atan2 branch cuts).
+  unwrap(lPhaseDeg)
+  unwrap(gPhaseDeg)
+
+  return {
+    w,
+    gMagDb,
+    gPhaseDeg,
+    cMagDb,
+    pMagDb,
+    iMagDb,
+    dMagDb,
+    lMagDb,
+    lPhaseDeg,
+    tMagDb,
+    sMagDb,
+    margins: findMargins(w, lMagDb, lPhaseDeg),
+    closed: closedStats(w, tMagDb, sMagDb),
+  }
+}
+
+/** Remove ±360° jumps from atan2 branch cuts. */
+function unwrap(phaseDeg: number[]) {
   for (let i = 1; i < phaseDeg.length; i++) {
     while (phaseDeg[i] - phaseDeg[i - 1] > 180) phaseDeg[i] -= 360
     while (phaseDeg[i] - phaseDeg[i - 1] < -180) phaseDeg[i] += 360
   }
+}
 
-  return { w, magDb, phaseDeg, margins: findMargins(w, magDb, phaseDeg) }
+function closedStats(w: number[], tMagDb: number[], sMagDb: number[]): ClosedLoopStats {
+  let mtDb = -Infinity
+  let msDb = -Infinity
+  for (let i = 0; i < w.length; i++) {
+    if (tMagDb[i] > mtDb) mtDb = tMagDb[i]
+    if (sMagDb[i] > msDb) msDb = sMagDb[i]
+  }
+  // Bandwidth: last downward crossing of −3 dB (T may dip then peak first).
+  let wBw: number | null = null
+  for (let i = 0; i < w.length - 1; i++) {
+    if (tMagDb[i] >= -3 && tMagDb[i + 1] < -3) {
+      const frac = (tMagDb[i] + 3) / (tMagDb[i] - tMagDb[i + 1])
+      wBw = 10 ** (Math.log10(w[i]) + (Math.log10(w[i + 1]) - Math.log10(w[i])) * frac)
+    }
+  }
+  return { wBw, mtDb, msDb }
 }
 
 function findMargins(w: number[], magDb: number[], phaseDeg: number[]): Margins {
@@ -146,4 +234,24 @@ function findMargins(w: number[], magDb: number[], phaseDeg: number[]): Margins 
   }
 
   return { wgc, pm, wpc, gmDb }
+}
+
+/** Eigenvalues of a 2×2 A matrix — the linearized plant poles, for display. */
+export function poles2(A: number[][]): { re: number; im: number }[] {
+  if (A.length !== 2) return []
+  const tr = A[0][0] + A[1][1]
+  const det = A[0][0] * A[1][1] - A[0][1] * A[1][0]
+  const disc = tr * tr - 4 * det
+  if (disc >= 0) {
+    const r = Math.sqrt(disc)
+    return [
+      { re: (tr - r) / 2, im: 0 },
+      { re: (tr + r) / 2, im: 0 },
+    ]
+  }
+  const r = Math.sqrt(-disc) / 2
+  return [
+    { re: tr / 2, im: -r },
+    { re: tr / 2, im: r },
+  ]
 }

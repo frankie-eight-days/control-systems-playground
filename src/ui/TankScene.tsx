@@ -132,6 +132,24 @@ export function TankScene() {
         ctx.fillText('OVERFLOW', tankX + tankW / 2, tankY - 14)
       }
 
+      // ----- hysteresis band (on/off mode) -----
+      if (p.controller === 'onoff') {
+        const yHi = yOfLevel(p.setpoint + p.band / 2)
+        const yLo = yOfLevel(p.setpoint - p.band / 2)
+        ctx.fillStyle = 'rgba(74, 222, 128, 0.08)'
+        ctx.fillRect(tankX + 2.5, yHi, tankW - 5, yLo - yHi)
+        ctx.strokeStyle = 'rgba(74, 222, 128, 0.45)'
+        ctx.lineWidth = 1
+        ctx.setLineDash([3, 4])
+        for (const yy of [yHi, yLo]) {
+          ctx.beginPath()
+          ctx.moveTo(tankX, yy)
+          ctx.lineTo(tankX + tankW, yy)
+          ctx.stroke()
+        }
+        ctx.setLineDash([])
+      }
+
       // ----- setpoint line -----
       const spY = yOfLevel(p.setpoint)
       ctx.strokeStyle = '#4ade80'
