@@ -50,52 +50,108 @@ Keep simulation, analysis, and UI strictly separated:
 
 ```
 src/
-  sim/          Pure simulation — NO React/DOM imports
+  sim/          Pure simulation — NO React/DOM imports (Worker-portable)
     integrator.ts     Fixed-timestep RK4
-    pid.ts            PID w/ derivative filtering, anti-windup, saturation
-    loop.ts           Sim engine: controller + plant + disturbances + time accel
-    plants/           One file per plant, implementing the Plant interface
+    pid.ts, onoff.ts  Controller LOGIC (classes, no UI)
+    loop.ts           SimEngine — scenario-agnostic; scenario slice +
+                      controller factory are injected via tick()
   analysis/     Pure math — NO React/DOM imports
     complex.ts        Minimal complex arithmetic (no math.js — too heavy)
-    linearize.ts      Numerical linearization → state space (A, B, C, D)
-    freq.ts           L(jω) sweep, gain/phase margins, crossover freqs
-  state/        Zustand store(s) bridging sim ↔ UI
-  ui/           React components, canvas scenes, uPlot wrappers
+    linearize.ts      Numerical linearization → state space (A, B, C)
+    freq.ts           freqAnalysis(): G/C/L/T/S sweep + margins + closed-loop stats
+  controllers/  ControllerDef registry: sim law + matching C(jω) + UI metadata
+    types.ts          ControllerDef / ControllerImpl — THE controller contract
+    pid.tsx, onoff.tsx, registry.ts
+  scenarios/    One folder per scenario — THE unit of parallel work
+    types.ts          ScenarioDef — THE scenario contract (read this first)
+    registry.ts       Display-order list. OWNED BY THE INTEGRATION LEAD.
+    stub.tsx          Placeholder factory for not-yet-built scenarios
+    tank/             Reference implementation: plant.ts, scene.tsx,
+                      theory.tsx, index.ts (descriptor)
+    cruise/ thermal/ motor/ buck/    (one folder per scenario)
+  state/        Zustand store + engine instance bridging sim ↔ UI
+  ui/           Generic, descriptor-driven panels: BodePlot (5 tabs incl.
+                block diagram), StripCharts, ControlPanel, TheoryPanel
 ```
 
-### Key interfaces (do not break these)
-
-```ts
-// Every plant is a continuous-time ODE: ẋ = f(x, u, d)
-interface Plant {
-  deriv(x: number[], u: number, d: DisturbanceInputs): number[];
-  output(x: number[]): number;            // what the sensor measures
-  equilibrium(y: number): { x: number[]; u: number };  // for linearization
-}
-
-// Every controller maps (setpoint, measurement, dt) → actuator command
-interface Controller {
-  update(setpoint: number, measurement: number, dt: number): number;
-  reset(): void;
-}
-```
-
-New plants and new controllers must slot in through these interfaces —
-that's how fuzzy/on-off control and the buck converter arrive later without
-rework.
+The contracts live in `src/scenarios/types.ts` (ScenarioDef) and
+`src/controllers/types.ts` (ControllerDef). The generic UI consumes ONLY
+those contracts — there is no scenario-specific code outside scenario
+folders. `src/scenarios/tank/` is the reference implementation; when in
+doubt, copy its patterns.
 
 ### Simulation rules
 
-- Fixed physics timestep (`dt = 5 ms` of *simulated* time). Time acceleration
-  = run more substeps per animation frame; never stretch dt.
+- Fixed physics timestep per scenario (`ScenarioDef.dt`, *simulated* time —
+  tank 5 ms, buck ~1 µs). Time scale = run more (or fewer) substeps per
+  animation frame; never stretch dt. Time scales < 1 are slow motion.
 - Determinism matters: same gains + same disturbances ⇒ identical traces.
   Don't use `Math.random()` in the sim path except through the seeded noise
   generator.
-- Actuator saturation is physics, always enforced in the loop — the controller
-  must be *told* the saturated value (needed for anti-windup).
-- Sim currently runs on the main thread (tank dynamics are slow). If a future
-  plant needs >~200× acceleration, move the loop to a Web Worker — the
-  `sim/` layer is DOM-free specifically so this stays cheap.
+- Actuator saturation is physics: controllers return the SATURATED command
+  (0–100) and handle their own anti-windup. Plants with hard state limits
+  (tank rim/floor) enforce them inside `deriv` by zeroing the derivative at
+  the boundary.
+- Sim runs on the main thread. If a future plant needs more substeps than
+  the per-frame cap allows, move the loop to a Web Worker — the `sim/`
+  layer is DOM-free specifically so this stays cheap.
+
+## Scenario authoring contract (for parallel scenario work)
+
+Each scenario teammate owns exactly one folder: `src/scenarios/<id>/`.
+
+**Hard rules — violating these breaks parallel work:**
+
+1. Edit ONLY files inside your folder. Do NOT touch `scenarios/registry.ts`
+   (already wired to your `index.ts` stub), the engine, the store, shared UI,
+   other scenarios, or package.json. If the contract seems to be missing
+   something you need, STOP and message the team lead — do not "fix" shared
+   code yourself.
+2. Your `index.ts` must export the same symbol name the stub exports
+   (e.g. `cruiseScenario`), typed `ScenarioDef`.
+3. Scenario-specific controllers (e.g. buck Type II/III) are DEFINED in your
+   folder and registered by calling `registerController(def)` from
+   `controllers/registry.ts` at the top of your `index.ts` (module load).
+   Their `response()` must describe the exact discrete law you simulate.
+4. Use real units everywhere, SI internally; pick display units EEs expect
+   (the y.fmt / noise.mul / timeDisplay / freqDisplay fields exist for this).
+5. Theory ↔ sim linkage is non-negotiable: your `PlantTheory` component must
+   show (a) the exact ODE `deriv` integrates (KaTeX via `ui/Math` Tex), with
+   parameter values, and (b) the transfer function linearized at the current
+   operating point with LIVE numeric gains/time-constants (compute via
+   `analysis/linearize` + `analysis/freq dcGain`, memoized on the store
+   values that move the operating point).
+6. Scene: Canvas 2D, rAF loop, read `useStore.getState()` + `engine` each
+   frame (see tank/scene.tsx for the resize/dpr pattern). Make disturbances
+   clickable where natural via `engine.applyImpulse`.
+7. Presets: 3–5, each demonstrating a named behavior, with `desc` strings
+   that say what to watch for.
+
+**Verify your work (no `npm run build` — it races other teammates on dist/):**
+
+- Type-check: `npx tsc -p tsconfig.app.json --noEmit`
+- Visual: a dev server is already running; screenshot your scenario with
+  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless
+  --disable-gpu --screenshot=/tmp/<id>.png --window-size=1440,800
+  --hide-scrollbars --virtual-time-budget=8000
+  "http://localhost:5174/?scenario=<id>"` and READ the png. Verify: scene
+  draws, response converges sensibly, Bode tabs populate, theory panel
+  equations render, no Vite error overlay.
+- Sanity-check the physics NUMERICALLY in your final report: state the
+  hand-derived pole/gain/crossover values and confirm the on-screen
+  linearization and PM match. If they disagree, your model or your math is
+  wrong — find out which before reporting done.
+
+### Analysis rules
+
+- Bode plots come from **numerical linearization** at the current operating
+  point (perturb `deriv`), not symbolic math. The UI labels the operating
+  point, since nonlinear plants have operating-point-dependent dynamics.
+- Controller frequency response (`ControllerDef.response`) must use the
+  *exact same* structure as the time-domain implementation (including
+  filters), so the Bode plot honestly describes the controller being
+  simulated. Nonlinear laws set `response: null` and the LTI tabs show an
+  explainer.
 
 ### Analysis rules
 
@@ -119,13 +175,15 @@ Real-world PID, not the textbook toy:
 ## Commands
 
 - `npm run dev` — dev server
-- `npm run build` — type-check (`tsc -b`) + production build. Run this to
-  verify changes; there is no test suite yet.
+- `npm run build` — type-check (`tsc -b`) + production build. Integration
+  lead runs this; teammates use `npx tsc -p tsconfig.app.json --noEmit`.
+  There is no test suite yet.
 
 ## Roadmap (don't build ahead, but don't paint into corners)
 
 1. ✅ v1: water tank + PID + strip charts + Bode + disturbances + time accel
-2. Cruise control, ball & beam; A/B twin-plant comparison mode
+2. ▶ wave 1 (parallel): cruise control, thermal/dead-time boiler, DC motor
+   position servo, buck converter (Type II/III compensators)
 3. Tuning-method guided modes (Ziegler–Nichols, relay autotune, Cohen–Coon)
 4. On/off + hysteresis controller (thermostat), fuzzy logic controller
 5. Buck converter (voltage mode → Type III ≈ PID; current mode), LDO

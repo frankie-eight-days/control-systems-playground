@@ -1,146 +1,173 @@
 import { rk4 } from './integrator'
-import { OnOffController } from './onoff'
-import { PID } from './pid'
 import { SeededNoise } from './noise'
-import { TankPlant, TANK, type TankDisturbances } from './plants/tank'
+import type { Plant } from './plant'
 
-export type ControllerType = 'pid' | 'onoff'
+/** Live controller instance, structurally identical to controllers/types.ts
+ *  ControllerImpl (declared here too so sim/ stays import-clean of UI). */
+export interface ControllerImpl {
+  reset(): void
+  update(setpoint: number, y: number, dt: number, p: Record<string, number>): number
+  termValues?(): number[]
+}
 
-/** Fixed physics timestep (simulated seconds). Never stretched — time
- *  acceleration runs MORE substeps per animation frame. */
-export const DT = 0.005
-/** History sampling period (simulated seconds). */
-export const SAMPLE_DT = 0.1
-/** History window: 240 s of simulated time. */
-const MAX_SAMPLES = 2400
-/** Safety cap on physics substeps per tick (≈ 400× realtime at 60 fps). */
-const MAX_STEPS_PER_TICK = 8000
+/** The slice of a ScenarioDef the engine needs — sim/ never imports React,
+ *  so the full descriptor (which carries components) stays out of here. */
+export interface EngineScenario {
+  id: string
+  plant: Plant
+  initialX: number[]
+  dt: number
+  sampleDt: number
+  windowS: number
+  aux?: { get(x: number[], u: number, d: Record<string, number>): number }
+}
 
+/** Store snapshot consumed each tick. */
 export interface SimParams {
+  scenarioId: string
   running: boolean
   timeScale: number
   setpoint: number
-  controller: ControllerType
-  kp: number
-  ki: number
-  kd: number
-  wf: number
-  band: number // m, on/off hysteresis width Δ
-  valve: number // 0..1
-  noiseSigma: number // m, gaussian σ on the level sensor
+  controllerId: string
+  ctl: Record<string, number>
+  dist: Record<string, number>
+  noiseSigma: number
 }
 
 export interface History {
   t: number[]
   sp: number[]
-  y: number[] // measured (noisy) level
+  y: number[]
   u: number[]
-  pTerm: number[]
-  iTerm: number[]
-  dTerm: number[]
+  /** Controller term decomposition, parallel to the def's termInfo. */
+  terms: number[][]
+  /** Scenario aux signal (e.g. inductor current), if defined. */
+  aux: number[]
 }
 
+/** Absolute ceiling on physics substeps per animation frame. */
+const HARD_STEP_CAP = 50_000
+
 /**
- * The simulation engine: plant + controller + disturbances, advanced with a
- * fixed-timestep accumulator. Pure of any DOM/React dependency so it can be
- * moved into a Web Worker later without changes.
+ * The simulation engine: plant + controller + disturbances advanced with a
+ * fixed-timestep accumulator. Scenario- and controller-agnostic: the active
+ * scenario slice and a controller factory are passed into tick() by the
+ * state layer, so this file stays DOM-free and Worker-portable.
  */
 export class SimEngine {
-  readonly plant = new TankPlant()
-  readonly pid = new PID()
-  readonly onoff = new OnOffController()
+  scn: EngineScenario | null = null
+  private controllerId = ''
+  private ctl: ControllerImpl | null = null
   private noise = new SeededNoise()
 
-  x: number[] = [0.2, 0]
+  x: number[] = []
   t = 0
-  /** Live values for the visualization layer. */
   u = 0
-  yMeas = 0.2
-  qOut = 0
-  overflow = false
+  yMeas = 0
 
-  history: History = { t: [], sp: [], y: [], u: [], pTerm: [], iTerm: [], dTerm: [] }
+  history: History = { t: [], sp: [], y: [], u: [], terms: [], aux: [] }
   private acc = 0
   private sampleAcc = 0
 
+  /** Reset plant + controller state for the current scenario. */
   reset() {
-    this.x = [0.2, 0]
+    if (!this.scn) return
+    this.x = this.scn.initialX.slice()
     this.t = 0
     this.u = 0
-    this.yMeas = 0.2
-    this.qOut = 0
-    this.overflow = false
+    this.yMeas = this.scn.plant.output(this.x)
     this.acc = 0
     this.sampleAcc = 0
-    this.pid.reset()
-    this.onoff.reset()
+    this.ctl?.reset()
     this.noise.reset()
-    for (const k of Object.keys(this.history) as (keyof History)[]) this.history[k].length = 0
+    const h = this.history
+    h.t.length = h.sp.length = h.y.length = h.u.length = h.aux.length = 0
+    for (const arr of h.terms) arr.length = 0
   }
 
-  /** Instantly add/remove volume (m³) — the click-to-disturb bucket dump. */
-  dump(volume: number) {
-    this.x[0] = Math.min(TANK.height, Math.max(0, this.x[0] + volume / TANK.area))
+  /** Instantaneous state disturbance (click-to-disturb). */
+  applyImpulse(fn: (x: number[]) => number[]) {
+    if (this.scn) this.x = fn(this.x)
   }
 
-  /** Advance the sim by dtReal wall-clock seconds at the given time scale. */
-  tick(dtReal: number, p: SimParams) {
-    if (!p.running) return
-    this.pid.setGains(p.kp, p.ki, p.kd, p.wf)
-    // Clamp huge frame gaps (tab was backgrounded) to avoid step explosions.
+  /** Advance by dtReal wall-clock seconds at the given time scale. */
+  tick(
+    dtReal: number,
+    p: SimParams,
+    scn: EngineScenario,
+    makeController: (id: string) => ControllerImpl,
+  ) {
+    if (this.scn?.id !== scn.id) {
+      // Scenario switch: adopt and hard-reset.
+      this.scn = scn
+      this.controllerId = ''
+      this.ctl = null
+      this.reset()
+    }
+    if (this.controllerId !== p.controllerId) {
+      this.controllerId = p.controllerId
+      this.ctl = makeController(p.controllerId)
+      this.ctl.reset()
+      // Term shape changes with the controller — clear that chart's data.
+      this.history.terms = []
+    }
+    if (!p.running || !this.ctl) return
+
+    // Clamp huge frame gaps (backgrounded tab), then cap substeps to what
+    // the configured time scale implies, plus an absolute CPU ceiling.
     this.acc += Math.min(dtReal, 0.25) * p.timeScale
-    let steps = Math.floor(this.acc / DT)
-    if (steps > MAX_STEPS_PER_TICK) {
-      steps = MAX_STEPS_PER_TICK
+    const cap = Math.min(HARD_STEP_CAP, Math.ceil((0.3 * p.timeScale) / scn.dt) + 8)
+    let steps = Math.floor(this.acc / scn.dt)
+    if (steps > cap) {
+      steps = cap
       this.acc = 0 // drop unprocessable backlog rather than spiraling
     } else {
-      this.acc -= steps * DT
+      this.acc -= steps * scn.dt
     }
-    const d: TankDisturbances = { valve: p.valve }
-    for (let i = 0; i < steps; i++) this.step(p, d)
+    for (let i = 0; i < steps; i++) this.step(p, scn)
   }
 
-  private step(p: SimParams, d: TankDisturbances) {
-    // Sense (with optional gaussian noise), control, then actuate the plant
-    // with the SATURATED command held over the step (zero-order hold).
-    const yTrue = this.plant.output(this.x)
+  private step(p: SimParams, scn: EngineScenario) {
+    const dt = scn.dt
+    // Sense (+ optional gaussian noise), control, then actuate with the
+    // SATURATED command held over the step (zero-order hold).
+    const yTrue = scn.plant.output(this.x)
     this.yMeas = yTrue + (p.noiseSigma > 0 ? p.noiseSigma * this.noise.gauss() : 0)
-    this.u =
-      p.controller === 'onoff'
-        ? this.onoff.update(p.setpoint, this.yMeas, p.band)
-        : this.pid.update(p.setpoint, this.yMeas, DT)
+    this.u = this.ctl!.update(p.setpoint, this.yMeas, dt, p.ctl)
 
     const u = this.u
-    this.x = rk4((x) => this.plant.deriv(x, u, d), this.x, DT)
+    this.x = rk4((x) => scn.plant.deriv(x, u, p.dist), this.x, dt)
+    this.t += dt
 
-    // Physical limits: the tank floor and rim are hard constraints.
-    this.overflow = this.x[0] > TANK.height
-    this.x[0] = Math.min(TANK.height, Math.max(0, this.x[0]))
-    this.x[1] = Math.max(0, this.x[1])
-    this.qOut = this.plant.outflow(this.x[0], p.valve)
-    this.t += DT
-
-    this.sampleAcc += DT
-    if (this.sampleAcc >= SAMPLE_DT - 1e-9) {
+    this.sampleAcc += dt
+    if (this.sampleAcc >= scn.sampleDt - 1e-12) {
       this.sampleAcc = 0
-      this.record(p)
+      this.record(p, scn)
     }
   }
 
-  private record(p: SimParams) {
+  private record(p: SimParams, scn: EngineScenario) {
     const h = this.history
     h.t.push(this.t)
     h.sp.push(p.setpoint)
     h.y.push(this.yMeas)
     h.u.push(this.u)
-    // P/I/D decomposition only exists in PID mode; record zeros for on/off.
-    const pidMode = p.controller === 'pid'
-    h.pTerm.push(pidMode ? this.pid.terms.p : 0)
-    h.iTerm.push(pidMode ? this.pid.terms.i : 0)
-    h.dTerm.push(pidMode ? this.pid.terms.d : 0)
-    if (h.t.length > MAX_SAMPLES) {
-      const drop = h.t.length - MAX_SAMPLES
-      for (const k of Object.keys(h) as (keyof History)[]) h[k].splice(0, drop)
+    const tv = this.ctl!.termValues?.()
+    if (tv) {
+      while (h.terms.length < tv.length) h.terms.push(new Array(h.t.length - 1).fill(0))
+      for (let i = 0; i < tv.length; i++) h.terms[i].push(tv[i])
+    }
+    h.aux.push(scn.aux ? scn.aux.get(this.x, this.u, p.dist) : 0)
+
+    const maxSamples = Math.ceil(scn.windowS / scn.sampleDt)
+    if (h.t.length > maxSamples) {
+      const drop = h.t.length - maxSamples
+      h.t.splice(0, drop)
+      h.sp.splice(0, drop)
+      h.y.splice(0, drop)
+      h.u.splice(0, drop)
+      h.aux.splice(0, drop)
+      for (const arr of h.terms) arr.splice(0, drop)
     }
   }
 }

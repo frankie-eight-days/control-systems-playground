@@ -1,10 +1,17 @@
 import { useEffect, useRef } from 'react'
-import { engine } from '../state/engine'
-import { useStore } from '../state/store'
-import { TANK } from '../sim/plants/tank'
+import { engine } from '../../state/engine'
+import { useStore } from '../../state/store'
+import { TANK, tankPlant } from './plant'
 
 const WATER = '#1d6fa3'
 const WATER_TOP = '#2e8fc9'
+
+/** ±50 L click-to-disturb impulse (Δh = V / A_t), shared with the descriptor. */
+export const dumpVolume = (volume: number) => (x: number[]) => {
+  const next = x.slice()
+  next[0] = Math.min(TANK.height, Math.max(0, next[0] + volume / TANK.area))
+  return next
+}
 
 /**
  * Canvas scene: tank, lagged pump feeding from above, gravity drain through
@@ -36,9 +43,12 @@ export function TankScene() {
       ctx.clearRect(0, 0, W, H)
 
       const p = useStore.getState()
-      const h = engine.x[0]
+      if (engine.x.length < 2) return
+      const valve = p.dist.valve ?? 0.5
+      const h = Math.min(TANK.height, Math.max(0, engine.x[0]))
       const qIn = Math.max(0, engine.x[1])
-      const qOut = engine.qOut
+      const qOut = tankPlant.outflow(h, valve)
+      const overflow = engine.x[0] >= TANK.height - 0.004 && qIn > qOut
       const t = engine.t
 
       // ----- layout -----
@@ -125,7 +135,7 @@ export function TankScene() {
       }
 
       // overflow warning
-      if (engine.overflow) {
+      if (overflow) {
         ctx.fillStyle = '#f87171'
         ctx.font = 'bold 13px ui-sans-serif, sans-serif'
         ctx.textAlign = 'center'
@@ -133,9 +143,10 @@ export function TankScene() {
       }
 
       // ----- hysteresis band (on/off mode) -----
-      if (p.controller === 'onoff') {
-        const yHi = yOfLevel(p.setpoint + p.band / 2)
-        const yLo = yOfLevel(p.setpoint - p.band / 2)
+      if (p.controllerId === 'onoff') {
+        const band = p.ctl.band ?? 0.1
+        const yHi = yOfLevel(Math.min(TANK.height, p.setpoint + band / 2))
+        const yLo = yOfLevel(Math.max(0, p.setpoint - band / 2))
         ctx.fillStyle = 'rgba(74, 222, 128, 0.08)'
         ctx.fillRect(tankX + 2.5, yHi, tankW - 5, yLo - yHi)
         ctx.strokeStyle = 'rgba(74, 222, 128, 0.45)'
@@ -179,13 +190,13 @@ export function TankScene() {
       ctx.moveTo(tankX + tankW + 2, outY)
       ctx.lineTo(valveX + 26, outY)
       ctx.stroke()
-      // valve butterfly symbol (two triangles), rotation hints at opening
+      // valve butterfly symbol, rotation hints at opening
       ctx.fillStyle = '#0f172a'
       ctx.fillRect(valveX - 11, outY - 11, 22, 22)
       ctx.save()
       ctx.translate(valveX, outY)
-      ctx.rotate((1 - p.valve) * (Math.PI / 2) * 0.85)
-      ctx.strokeStyle = p.valve > 0.02 ? '#fbbf24' : '#f87171'
+      ctx.rotate((1 - valve) * (Math.PI / 2) * 0.85)
+      ctx.strokeStyle = valve > 0.02 ? '#fbbf24' : '#f87171'
       ctx.lineWidth = 3.5
       ctx.beginPath()
       ctx.moveTo(-10, 0)
@@ -195,7 +206,7 @@ export function TankScene() {
       ctx.fillStyle = '#cbd5e1'
       ctx.font = '11px ui-monospace, monospace'
       ctx.textAlign = 'center'
-      ctx.fillText(`valve ${(p.valve * 100).toFixed(0)}%`, valveX + 4, outY + 26)
+      ctx.fillText(`valve ${(valve * 100).toFixed(0)}%`, valveX + 4, outY + 26)
       // outflow stream
       if (qOut > 1e-5 && h > 0.005) {
         const sw = 2 + (qOut / TANK.qMax) * 9
@@ -224,18 +235,18 @@ export function TankScene() {
         ref={canvasRef}
         className="cursor-pointer"
         title="Click to dump 50 L into the tank"
-        onClick={() => engine.dump(0.05)}
+        onClick={() => engine.applyImpulse(dumpVolume(0.05))}
       />
       <div className="absolute right-2 top-2 flex gap-1.5">
         <button
           className="rounded bg-sky-900/70 px-2 py-1 text-xs text-sky-200 hover:bg-sky-800"
-          onClick={() => engine.dump(0.05)}
+          onClick={() => engine.applyImpulse(dumpVolume(0.05))}
         >
           +50 L
         </button>
         <button
           className="rounded bg-sky-900/70 px-2 py-1 text-xs text-sky-200 hover:bg-sky-800"
-          onClick={() => engine.dump(-0.05)}
+          onClick={() => engine.applyImpulse(dumpVolume(-0.05))}
         >
           −50 L
         </button>

@@ -2,62 +2,101 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type uPlot from 'uplot'
 import { freqAnalysis, poles2, type FreqAnalysis } from '../analysis/freq'
 import { linearize } from '../analysis/linearize'
-import { engine } from '../state/engine'
+import { getController } from '../controllers/registry'
+import { getScenario } from '../scenarios/registry'
 import { useStore } from '../state/store'
-import { axisTheme, mountChart, seriesColors } from './charts'
 import { BlockDiagram } from './BlockDiagram'
+import { axisTheme, mountChart } from './charts'
+import { seriesColors } from './colors'
 
 /**
- * Frequency-domain panel with four views of the SAME loop:
+ * Frequency-domain panel with five views of the SAME loop:
+ *   Diagram — live block diagram
  *   L — open loop C·G with stability margins
  *   T/S — closed loop: tracking T = L/(1+L) and sensitivity S = 1/(1+L)
- *   C — controller anatomy: how P, I, D stack into the compensator
+ *   C — controller anatomy: component asymptotes stacking into C(jω)
  *   G — the linearized plant alone
  * In dB, |L| = |C| + |G| — the C and G tabs literally add to give L.
+ * The x-axis displays rad/s or Hz per the scenario (internally rad/s).
  */
-type Tab = 'L' | 'T' | 'C' | 'G' | 'D'
-/** Tabs that render a uPlot chart (everything but the block diagram). */
+type Tab = 'D' | 'L' | 'T' | 'C' | 'G'
 type ChartTab = 'L' | 'T' | 'C' | 'G'
 
 const TABS: { id: Tab; label: string; hint: string }[] = [
   { id: 'D', label: 'Diagram', hint: 'system block diagram, live signals' },
   { id: 'L', label: 'L = C·G', hint: 'open loop + margins' },
   { id: 'T', label: 'T, S', hint: 'closed loop' },
-  { id: 'C', label: 'C = P+I+D', hint: 'controller anatomy' },
+  { id: 'C', label: 'C anatomy', hint: 'controller components' },
   { id: 'G', label: 'G', hint: 'plant' },
 ]
 
 interface Analysis extends FreqAnalysis {
   u0: number
   poles: { re: number; im: number }[]
+  /** Hz display: divide rad/s by 2π. */
+  wDiv: number
+  freqUnit: string
+}
+
+const EMPTY: Analysis = {
+  w: [],
+  gMagDb: [],
+  gPhaseDeg: [],
+  cMagDb: [],
+  cParts: [],
+  lMagDb: [],
+  lPhaseDeg: [],
+  tMagDb: [],
+  sMagDb: [],
+  margins: { wgc: null, pm: null, wpc: null, gmDb: null },
+  closed: { wBw: null, mtDb: -200, msDb: -200 },
+  u0: 0,
+  poles: [],
+  wDiv: 1,
+  freqUnit: 'rad/s',
 }
 
 export function BodePlot() {
-  const kp = useStore((s) => s.kp)
-  const ki = useStore((s) => s.ki)
-  const kd = useStore((s) => s.kd)
-  const wf = useStore((s) => s.wf)
+  const scenarioId = useStore((s) => s.scenarioId)
+  const controllerId = useStore((s) => s.controllerId)
+  const ctl = useStore((s) => s.ctl)
   const setpoint = useStore((s) => s.setpoint)
-  const valve = useStore((s) => s.valve)
-  const controller = useStore((s) => s.controller)
+  const dist = useStore((s) => s.dist)
   const [tab, setTab] = useState<Tab>('L')
-  // Relay control is nonlinear — the LTI views (L, T, C) don't apply.
-  const isNote = controller === 'onoff' && (tab === 'L' || tab === 'T' || tab === 'C')
+
+  const scn = getScenario(scenarioId)
+  const cdef = getController(controllerId)
+  // Nonlinear law (relay): the LTI views don't apply.
+  const isNote = cdef.response === null && (tab === 'L' || tab === 'T' || tab === 'C')
   const isChart = tab !== 'D' && !isNote
 
   const data: Analysis = useMemo(() => {
-    const d = { valve }
-    const eq = engine.plant.equilibrium(setpoint, d)
-    const ss = linearize(engine.plant, eq.x, eq.u, d)
-    return { ...freqAnalysis(ss, { kp, ki, kd, wf }), u0: eq.u, poles: poles2(ss.A) }
-  }, [kp, ki, kd, wf, setpoint, valve])
+    const response = cdef.response
+    if (!response) return EMPTY
+    const eq = scn.plant.equilibrium(setpoint, dist)
+    const ss = linearize(scn.plant, eq.x, eq.u, dist)
+    const parts = (cdef.parts ?? []).map((part) => ({
+      label: part.label,
+      color: part.color,
+      mag: (w: number) => part.mag(w, ctl),
+    }))
+    const fa = freqAnalysis(ss, (w) => response(ctl, w), parts, scn.wSweep[0], scn.wSweep[1])
+    return {
+      ...fa,
+      u0: eq.u,
+      poles: ss.B.length === 2 ? poles2(ss.A) : [],
+      wDiv: scn.freqDisplay === 'Hz' ? 2 * Math.PI : 1,
+      freqUnit: scn.freqDisplay,
+    }
+  }, [scn, cdef, ctl, setpoint, dist])
 
   const dataRef = useRef(data)
   dataRef.current = data
   const chartRef = useRef<ReturnType<typeof mountChart> | null>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
 
-  // (Re)create the chart when the tab changes — series/axes differ per view.
+  // (Re)create the chart when the view shape changes — tab, scenario (freq
+  // unit), or controller (number of anatomy series).
   useEffect(() => {
     if (!isChart) return
     const chartTab = tab as ChartTab
@@ -71,13 +110,13 @@ export function BodePlot() {
       mounted.dispose()
       chartRef.current = null
     }
-  }, [tab, isChart])
+  }, [tab, isChart, scenarioId, controllerId])
 
-  // Push new data into the existing chart when gains / operating point move.
+  // Push new data into the existing chart when params move.
   useEffect(() => {
-    if (tab === 'D') return
+    if (tab === 'D' || isNote) return
     chartRef.current?.chart.setData(chartData(tab, data))
-  }, [data, tab])
+  }, [data, tab, isNote])
 
   return (
     <div className="flex h-full flex-col">
@@ -103,33 +142,31 @@ export function BodePlot() {
       {tab === 'D' ? (
         <BlockDiagram />
       ) : isNote ? (
-        <RelayNote />
+        <NonlinearNote label={cdef.label} />
       ) : (
         <>
           <div ref={wrapRef} className="min-h-0 flex-1" />
-          <Footer tab={tab} data={data} setpoint={setpoint} valve={valve} />
+          <Footer tab={tab as ChartTab} data={data} setpoint={setpoint} scnY={scn.y} />
         </>
       )}
     </div>
   )
 }
 
-function RelayNote() {
+function NonlinearNote({ label }: { label: string }) {
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center p-6">
       <div className="max-w-md space-y-2 text-sm text-slate-400">
-        <p className="font-semibold text-slate-200">
-          On/off control is nonlinear — there is no C(s).
+        <p className="font-semibold text-slate-200">{label} is nonlinear — there is no C(s).</p>
+        <p>
+          Its effective "gain" depends on signal amplitude, so the LTI views (L, T/S, C) don't
+          apply. The loop doesn't settle — it <em>limit-cycles</em>; the theory panel predicts the
+          cycle from the plant's rates. Compare it against the strip chart.
         </p>
         <p>
-          A relay's "gain" depends on the signal amplitude, so the LTI views (L, T/S, C) don't
-          apply. The loop doesn't settle — it <em>limit-cycles</em>, and the theory panel predicts
-          the cycle period from the plant's fill/drain rates. Compare it against the strip chart.
-        </p>
-        <p>
-          The plant is still linear — the <span className="font-mono text-slate-300">G</span> tab
-          works. (Describing-function analysis, which extends Bode thinking to relays, is on the
-          roadmap.)
+          The plant is still linearizable — the <span className="font-mono text-slate-300">G</span>{' '}
+          tab works. (Describing-function analysis, which extends Bode thinking to relays, is on
+          the roadmap.)
         </p>
       </div>
     </div>
@@ -137,15 +174,16 @@ function RelayNote() {
 }
 
 function chartData(tab: ChartTab, d: Analysis): uPlot.AlignedData {
+  const wDisp = d.w.map((w) => w / d.wDiv)
   switch (tab) {
     case 'L':
-      return [d.w, d.lMagDb, d.lPhaseDeg]
+      return [wDisp, d.lMagDb, d.lPhaseDeg]
     case 'T':
-      return [d.w, d.tMagDb, d.sMagDb]
+      return [wDisp, d.tMagDb, d.sMagDb]
     case 'C':
-      return [d.w, d.cMagDb, d.pMagDb, d.iMagDb, d.dMagDb] as uPlot.AlignedData
+      return [wDisp, d.cMagDb, ...d.cParts.map((p) => p.magDb)] as uPlot.AlignedData
     case 'G':
-      return [d.w, d.gMagDb, d.gPhaseDeg]
+      return [wDisp, d.gMagDb, d.gPhaseDeg]
   }
 }
 
@@ -155,6 +193,7 @@ function buildOpts(
   height: number,
   dataRef: React.RefObject<Analysis>,
 ): uPlot.Options {
+  const freqUnit = dataRef.current.freqUnit
   const base: uPlot.Options = {
     width,
     height,
@@ -162,7 +201,7 @@ function buildOpts(
     cursor: { drag: { x: false, y: false } },
     select: { show: false, left: 0, top: 0, width: 0, height: 0 },
     scales: { x: { time: false, distr: 3, log: 10 }, dB: { auto: true } },
-    axes: [{ ...axisTheme, label: 'ω (rad/s)', labelSize: 12, size: 36 }],
+    axes: [{ ...axisTheme, label: `ω (${freqUnit})`, labelSize: 12, size: 36 }],
     series: [{ label: 'ω' }],
     hooks: { draw: [(u: uPlot) => drawMarkers(u, tab, dataRef.current)] },
   }
@@ -212,14 +251,20 @@ function buildOpts(
     case 'C':
       return {
         ...base,
-        title: 'Controller anatomy:  |C| with its P, I, D asymptotes',
+        title: 'Controller anatomy:  |C| with its component asymptotes',
         axes: [base.axes![0], dbAxis('|C|  (dB)', '#94a3b8')],
         series: [
           { label: 'ω' },
           { label: '|C|', scale: 'dB', stroke: '#e2e8f0', width: 2.5 },
-          { label: 'P', scale: 'dB', stroke: seriesColors.pTerm, width: 1.25, dash: [5, 5] },
-          { label: 'I', scale: 'dB', stroke: seriesColors.iTerm, width: 1.25, dash: [5, 5] },
-          { label: 'D', scale: 'dB', stroke: seriesColors.dTerm, width: 1.25, dash: [5, 5] },
+          ...dataRef.current.cParts.map(
+            (p): uPlot.Series => ({
+              label: p.label,
+              scale: 'dB',
+              stroke: p.color,
+              width: 1.25,
+              dash: [5, 5],
+            }),
+          ),
         ],
       }
     case 'G':
@@ -237,7 +282,7 @@ function buildOpts(
   }
 }
 
-function drawMarkers(u: uPlot, tab: Tab, d: Analysis) {
+function drawMarkers(u: uPlot, tab: ChartTab, d: Analysis) {
   const ctx = u.ctx
   const { left, top, width, height } = u.bbox
   ctx.save()
@@ -254,7 +299,7 @@ function drawMarkers(u: uPlot, tab: Tab, d: Analysis) {
   }
   const vline = (w: number | null, color: string) => {
     if (w == null) return
-    const x = u.valToPos(w, 'x', true)
+    const x = u.valToPos(w / d.wDiv, 'x', true)
     if (x < left || x > left + width) return
     ctx.strokeStyle = color
     ctx.beginPath()
@@ -273,14 +318,6 @@ function drawMarkers(u: uPlot, tab: Tab, d: Analysis) {
     hline(-3, 'dB', 'rgba(56, 189, 248, 0.4)')
     vline(d.closed.wBw, 'rgba(74, 222, 128, 0.8)')
     vline(d.margins.wgc, 'rgba(148, 163, 184, 0.35)')
-  } else if (tab === 'C') {
-    // corner frequencies where the I and D asymptotes meet P
-    if (d.margins) {
-      const s = useStore.getState()
-      if (s.kp > 0 && s.ki > 0) vline(s.ki / s.kp, 'rgba(167, 139, 250, 0.5)')
-      if (s.kp > 0 && s.kd > 0) vline(s.kp / s.kd, 'rgba(52, 211, 153, 0.5)')
-      if (s.kd > 0) vline(s.wf, 'rgba(148, 163, 184, 0.4)')
-    }
   } else if (tab === 'G') {
     hline(0, 'dB', 'rgba(148, 163, 184, 0.3)')
     for (const p of d.poles) if (p.im === 0 && p.re < 0) vline(-p.re, 'rgba(251, 191, 36, 0.5)')
@@ -292,18 +329,22 @@ function Footer({
   tab,
   data,
   setpoint,
-  valve,
+  scnY,
 }: {
-  tab: Tab
+  tab: ChartTab
   data: Analysis
   setpoint: number
-  valve: number
+  scnY: { fmt: (v: number) => string }
 }) {
   const m = data.margins
+  const fmtW = (w: number) => {
+    const v = w / data.wDiv
+    const s = v >= 0.01 ? v.toFixed(3) : v.toExponential(1)
+    return `${s} ${data.freqUnit}`
+  }
   const opPoint = (
     <span className="text-slate-500">
-      G linearized at h₀={setpoint.toFixed(2)} m, valve={(valve * 100).toFixed(0)}%, u₀=
-      {data.u0.toFixed(1)}%
+      G linearized at y₀={scnY.fmt(setpoint)}, u₀={data.u0.toFixed(1)}%
     </span>
   )
 
@@ -338,22 +379,25 @@ function Footer({
   } else if (tab === 'C') {
     body = (
       <span className="text-slate-400">
-        |I| falls −20 dB/dec, |P| is flat, |D| rises +20 dB/dec until ω<sub>f</sub> — the
-        compensator |C| rides the max of the three. In dB, |L| = |C| + |G|.
+        The compensator |C| rides the max of its component asymptotes. In dB, |L| = |C| + |G|.
       </span>
     )
   } else {
     body = (
       <>
-        <span className="text-slate-400">
-          poles:{' '}
-          {data.poles
-            .map((p) =>
-              p.im === 0 ? `${p.re.toPrecision(3)}` : `${p.re.toPrecision(3)}±j${Math.abs(p.im).toPrecision(3)}`,
-            )
-            .join(', ')}{' '}
-          rad/s
-        </span>
+        {data.poles.length > 0 && (
+          <span className="text-slate-400">
+            poles:{' '}
+            {data.poles
+              .map((p) =>
+                p.im === 0
+                  ? `${p.re.toPrecision(3)}`
+                  : `${p.re.toPrecision(3)}±j${Math.abs(p.im).toPrecision(3)}`,
+              )
+              .join(', ')}{' '}
+            rad/s
+          </span>
+        )}
         <span className="text-slate-500">each real pole: −20 dB/dec break + 90° phase lag</span>
       </>
     )
@@ -370,8 +414,4 @@ function Footer({
 function colorFor(v: number | null, good: number, ok: number): string {
   if (v == null) return 'text-slate-400'
   return v > good ? 'text-green-400' : v > ok ? 'text-yellow-400' : 'text-red-400'
-}
-
-function fmtW(w: number): string {
-  return w >= 0.01 ? `${w.toFixed(3)} rad/s` : `${w.toExponential(1)} rad/s`
 }

@@ -16,23 +16,6 @@ export function plantResponse(ss: StateSpace, w: number): Cx {
   return g
 }
 
-/**
- * Controller frequency response — the EXACT structure simulated in sim/pid.ts:
- *   C(s) = Kp + Ki/s + Kd·s/(τf·s + 1),   τf = 1/ωf
- * (Derivative-on-measurement changes the error response, not the loop gain,
- * so L(jω) = C(jω)·G(jω) is still the honest open loop.)
- */
-export function pidResponse(kp: number, ki: number, kd: number, wf: number, w: number): Cx {
-  const s = cx(0, w)
-  let c = cx(kp)
-  if (ki > 0) c = cAdd(c, cDiv(cx(ki), s))
-  if (kd > 0) {
-    const tf = 1 / wf
-    c = cAdd(c, cDiv(cMul(cx(kd), s), cAdd(cx(1), cMul(cx(tf), s))))
-  }
-  return c
-}
-
 /** DC gain G(0) = −C·A⁻¹·B (real solve; ∞ for integrating plants). */
 export function dcGain(ss: StateSpace): number {
   const n = ss.B.length
@@ -60,13 +43,6 @@ export interface Margins {
   gmDb: number | null
 }
 
-export interface PidGains {
-  kp: number
-  ki: number
-  kd: number
-  wf: number
-}
-
 /** Closed-loop summary figures. */
 export interface ClosedLoopStats {
   /** −3 dB closed-loop bandwidth of T, rad/s. Null if |T| never reaches −3 dB. */
@@ -77,9 +53,16 @@ export interface ClosedLoopStats {
   msDb: number
 }
 
+/** One labeled component curve of the controller (for the C-anatomy tab). */
+export interface PartCurve {
+  label: string
+  color: string
+  magDb: (number | null)[]
+}
+
 /**
  * Full frequency-response family over one log-ω sweep:
- *   G  — plant (linearized)             C  — controller, with P/I/D parts
+ *   G  — plant (linearized)             C  — controller, with component parts
  *   L  = C·G  open loop  →  margins     T  = L/(1+L)  closed loop (r → y)
  *   S  = 1/(1+L)  sensitivity (output disturbance → y)
  * In dB the buck-converter intuition holds exactly: |L| = |C| + |G|.
@@ -89,9 +72,7 @@ export interface FreqAnalysis {
   gMagDb: number[]
   gPhaseDeg: number[]
   cMagDb: number[]
-  pMagDb: (number | null)[]
-  iMagDb: (number | null)[]
-  dMagDb: (number | null)[]
+  cParts: PartCurve[]
   lMagDb: number[]
   lPhaseDeg: number[]
   tMagDb: number[]
@@ -104,7 +85,10 @@ const db = (mag: number) => Math.max(-200, 20 * Math.log10(Math.max(mag, 1e-12))
 
 export function freqAnalysis(
   ss: StateSpace,
-  pid: PidGains,
+  /** Controller response C(jω) — any LTI law (PID, Type II/III, ...). */
+  response: (w: number) => Cx,
+  /** Component decomposition |part(jω)| in absolute magnitude (null = off). */
+  parts: { label: string; color: string; mag: (w: number) => number | null }[],
   wMin = 1e-4,
   wMax = 1e3,
   nPoints = 600,
@@ -113,9 +97,7 @@ export function freqAnalysis(
   const gMagDb: number[] = []
   const gPhaseDeg: number[] = []
   const cMagDb: number[] = []
-  const pMagDb: (number | null)[] = []
-  const iMagDb: (number | null)[] = []
-  const dMagDb: (number | null)[] = []
+  const cParts: PartCurve[] = parts.map((p) => ({ label: p.label, color: p.color, magDb: [] }))
   const lMagDb: number[] = []
   const lPhaseDeg: number[] = []
   const tMagDb: number[] = []
@@ -123,13 +105,12 @@ export function freqAnalysis(
 
   const logMin = Math.log10(wMin)
   const logMax = Math.log10(wMax)
-  const tf = 1 / pid.wf
   const one = cx(1)
 
   for (let i = 0; i < nPoints; i++) {
     const wi = 10 ** (logMin + ((logMax - logMin) * i) / (nPoints - 1))
     const G = plantResponse(ss, wi)
-    const C = pidResponse(pid.kp, pid.ki, pid.kd, pid.wf, wi)
+    const C = response(wi)
     const L = cMul(G, C)
     const onePlusL = cAdd(one, L)
     const T = cDiv(L, onePlusL)
@@ -139,10 +120,10 @@ export function freqAnalysis(
     gMagDb.push(db(cAbs(G)))
     gPhaseDeg.push((cArg(G) * 180) / Math.PI)
     cMagDb.push(db(cAbs(C)))
-    // Individual controller terms (null when the gain is off, so charts skip them)
-    pMagDb.push(pid.kp > 0 ? db(pid.kp) : null)
-    iMagDb.push(pid.ki > 0 ? db(pid.ki / wi) : null)
-    dMagDb.push(pid.kd > 0 ? db((pid.kd * wi) / Math.hypot(1, wi * tf)) : null)
+    for (let k = 0; k < parts.length; k++) {
+      const m = parts[k].mag(wi)
+      cParts[k].magDb.push(m == null ? null : db(m))
+    }
     lMagDb.push(db(cAbs(L)))
     lPhaseDeg.push((cArg(L) * 180) / Math.PI)
     tMagDb.push(db(cAbs(T)))
@@ -157,9 +138,7 @@ export function freqAnalysis(
     gMagDb,
     gPhaseDeg,
     cMagDb,
-    pMagDb,
-    iMagDb,
-    dMagDb,
+    cParts,
     lMagDb,
     lPhaseDeg,
     tMagDb,

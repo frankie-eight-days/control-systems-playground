@@ -1,21 +1,29 @@
 import { useEffect } from 'react'
+import { getController } from './controllers/registry'
+import { getScenario, scenarios } from './scenarios/registry'
 import { engine } from './state/engine'
 import { useStore } from './state/store'
 import { BodePlot } from './ui/BodePlot'
 import { ControlPanel } from './ui/ControlPanel'
 import { StripCharts } from './ui/StripCharts'
-import { TankScene } from './ui/TankScene'
 import { TheoryPanel } from './ui/TheoryPanel'
 
 export default function App() {
+  const scenarioId = useStore((s) => s.scenarioId)
+  const loadScenario = useStore((s) => s.loadScenario)
+  const scn = getScenario(scenarioId)
+
   // Drive the simulation engine from one rAF loop. The engine itself is
-  // DOM-free; components read its state in their own draw loops.
+  // DOM-free; the scenario slice and controller factory are injected here.
   useEffect(() => {
     let raf = 0
     let last = performance.now()
     const frame = (now: number) => {
       raf = requestAnimationFrame(frame)
-      engine.tick((now - last) / 1000, useStore.getState())
+      const s = useStore.getState()
+      engine.tick((now - last) / 1000, s, getScenario(s.scenarioId), (id) =>
+        getController(id).create(),
+      )
       last = now
     }
     raf = requestAnimationFrame(frame)
@@ -26,9 +34,23 @@ export default function App() {
     <div className="flex h-screen flex-col bg-slate-950 text-slate-200">
       <header className="flex items-baseline gap-3 border-b border-slate-800 px-4 py-2">
         <h1 className="text-base font-bold tracking-tight">Control Systems Playground</h1>
-        <span className="text-xs text-slate-500">
-          PID level control of a gravity-drained tank — physics-based, runs entirely in your
-          browser
+        <nav className="flex items-baseline gap-1">
+          {scenarios.map((s) => (
+            <button
+              key={s.id}
+              className={`rounded px-2 py-0.5 text-xs ${
+                s.id === scenarioId
+                  ? 'bg-sky-600 font-semibold text-white'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+              onClick={() => loadScenario(s.id)}
+            >
+              {s.title}
+            </button>
+          ))}
+        </nav>
+        <span className="hidden text-xs text-slate-500 lg:inline">
+          {scn.blurb} — physics-based, runs entirely in your browser
         </span>
       </header>
 
@@ -36,7 +58,8 @@ export default function App() {
         <main className="grid min-w-0 flex-1 grid-rows-[minmax(0,1.15fr)_minmax(0,1fr)] gap-2 p-2">
           <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] gap-2">
             <Panel>
-              <TankScene />
+              {/* key remounts the scene (and its rAF/canvas) on scenario switch */}
+              <scn.Scene key={scn.id} />
             </Panel>
             <Panel>
               <BodePlot />

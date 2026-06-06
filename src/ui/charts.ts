@@ -1,22 +1,13 @@
 import uPlot from 'uplot'
 
+export { seriesColors } from './colors'
+
 /** Shared dark-theme axis/grid styling for all uPlot charts. */
 export const axisTheme: Partial<uPlot.Axis> = {
   stroke: '#94a3b8',
   grid: { stroke: 'rgba(148, 163, 184, 0.12)', width: 1 },
   ticks: { stroke: 'rgba(148, 163, 184, 0.25)', width: 1 },
 }
-
-export const seriesColors = {
-  setpoint: '#4ade80',
-  level: '#38bdf8',
-  control: '#fbbf24',
-  pTerm: '#f87171',
-  iTerm: '#a78bfa',
-  dTerm: '#34d399',
-  mag: '#38bdf8',
-  phase: '#fbbf24',
-} as const
 
 /**
  * Create a uPlot bound to a container div, kept sized to it with a

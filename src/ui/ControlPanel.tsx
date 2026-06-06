@@ -1,40 +1,14 @@
+import { getController } from '../controllers/registry'
+import { getScenario } from '../scenarios/registry'
+import type { SliderSpec } from '../scenarios/types'
 import { engine } from '../state/engine'
 import { useStore } from '../state/store'
-import type { SimParams } from '../sim/loop'
 
-const SPEEDS = [1, 2, 5, 10, 25, 50, 100]
-
-/**
- * One-click tuning examples. The marginal gain is exact theory: for this
- * plant ∠L hits −180° at ω = 1/√(τ₁τ₂) ≈ 0.128 rad/s, and pure-I control
- * reaches |L| = 1 there at Ki ≈ 16.8 — so 16.8 oscillates forever and 20
- * grows until the pump saturates into a limit cycle.
- */
-const PRESETS: { name: string; desc: string; params: Partial<SimParams> }[] = [
-  {
-    name: 'Well-damped',
-    desc: 'PI, PM ≈ 75° — clean approach, no overshoot to speak of',
-    params: { controller: 'pid', kp: 60, ki: 1.5, kd: 0, timeScale: 10 },
-  },
-  {
-    name: 'Underdamped',
-    desc: 'Too much Ki, PM ≈ 35° — overshoot and ringing',
-    params: { controller: 'pid', kp: 60, ki: 10, kd: 0, timeScale: 25 },
-  },
-  {
-    name: 'Marginal',
-    desc: 'Pure I at the critical gain, PM ≈ 0° — oscillates forever',
-    params: { controller: 'pid', kp: 0, ki: 16.8, kd: 0, timeScale: 50 },
-  },
-  {
-    name: 'Unstable',
-    desc: 'PM < 0 — grows until the pump saturates into a limit cycle',
-    params: { controller: 'pid', kp: 0, ki: 20, kd: 0, timeScale: 50 },
-  },
-]
-
+/** Fully descriptor-driven control panel — no scenario-specific code here. */
 export function ControlPanel() {
   const s = useStore()
+  const scn = getScenario(s.scenarioId)
+  const ctlCfg = scn.controllers.find((c) => c.id === s.controllerId) ?? scn.controllers[0]
 
   return (
     <div className="space-y-3 text-sm">
@@ -58,9 +32,11 @@ export function ControlPanel() {
           </button>
         </div>
         <div>
-          <div className="mb-1 text-xs text-slate-400">Time acceleration</div>
+          <div className="mb-1 text-xs text-slate-400">
+            Time scale {scn.timeScales.some((v) => v < 1) ? '(<1 = slow motion)' : ''}
+          </div>
           <div className="flex flex-wrap gap-1">
-            {SPEEDS.map((v) => (
+            {scn.timeScales.map((v) => (
               <button
                 key={v}
                 className={`rounded px-2 py-0.5 font-mono text-xs ${
@@ -76,149 +52,100 @@ export function ControlPanel() {
           </div>
         </div>
         <Slider
-          label="Setpoint r"
+          spec={scn.setpoint}
           value={s.setpoint}
-          min={0.1}
-          max={1.9}
-          step={0.01}
-          unit="m"
-          fmt={(v) => v.toFixed(2)}
           onChange={(v) => s.set({ setpoint: v })}
         />
       </Section>
 
       <Section title="Controller">
-        <div className="flex gap-1">
-          {(['pid', 'onoff'] as const).map((c) => (
+        <div className="flex flex-wrap gap-1">
+          {scn.controllers.map((cfg) => (
             <button
-              key={c}
+              key={cfg.id}
               className={`rounded px-3 py-1 text-xs font-semibold ${
-                s.controller === c
+                s.controllerId === cfg.id
                   ? 'bg-sky-600 text-white'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
               }`}
-              onClick={() => {
-                // fresh controller state on switch — no stale integrator bump
-                engine.pid.reset()
-                engine.onoff.reset()
-                s.set({ controller: c })
-              }}
+              onClick={() => s.setController(cfg.id)}
             >
-              {c === 'pid' ? 'PID' : 'On/Off + hysteresis'}
+              {getController(cfg.id).label}
             </button>
           ))}
         </div>
-        {s.controller === 'onoff' && (
-          <>
-            <Slider
-              label="Hysteresis band Δ"
-              value={s.band}
-              min={0.01}
-              max={0.5}
-              step={0.01}
-              unit="m"
-              fmt={(v) => v.toFixed(2)}
-              onChange={(v) => s.set({ band: v })}
-            />
-            <p className="text-xs text-slate-500">
-              The pump is either 0% or 100% — like a thermostat. Narrow the band for tighter
-              level control but faster pump cycling (real pumps hate that).
-            </p>
-          </>
-        )}
+        {ctlCfg.params.map((spec) => (
+          <Slider
+            key={spec.key}
+            spec={spec}
+            value={s.ctl[spec.key] ?? 0}
+            onChange={(v) => s.set({ ctl: { ...s.ctl, [spec.key]: v } })}
+          />
+        ))}
       </Section>
 
-      {s.controller === 'pid' && (
+      {scn.presets.length > 0 && (
         <Section title="Tuning examples">
           <div className="grid grid-cols-2 gap-1">
-            {PRESETS.map((p) => (
+            {scn.presets.map((p) => (
               <button
                 key={p.name}
                 title={p.desc}
                 className="rounded bg-slate-800 px-2 py-1 text-left text-xs text-slate-200 hover:bg-slate-700"
-                onClick={() => s.set(p.params)}
+                onClick={() => {
+                  if (p.set.controllerId && p.set.controllerId !== s.controllerId) {
+                    s.setController(p.set.controllerId)
+                  }
+                  const { controllerId: _cid, ctl, ...rest } = p.set
+                  s.set({ ...rest, ...(ctl ? { ctl: { ...ctl } } : {}) })
+                }}
               >
                 {p.name}
               </button>
             ))}
           </div>
           <p className="text-xs text-slate-500">
-            Stable → ringing → sustained oscillation → divergence. Watch PM on the Bode footer
-            walk down through 75° → 35° → 0° → negative as you click across.
+            Hover a preset for what it demonstrates. Watch the Bode footer's PM react.
           </p>
         </Section>
       )}
 
-      {s.controller === 'pid' && (
-      <Section title="PID gains">
-        <Slider
-          label="Kp  (proportional)"
-          value={s.kp}
-          min={0}
-          max={300}
-          step={1}
-          unit="%/m"
-          fmt={(v) => v.toFixed(0)}
-          onChange={(v) => s.set({ kp: v })}
-        />
-        <Slider
-          label="Ki  (integral)"
-          value={s.ki}
-          min={0}
-          max={20}
-          step={0.1}
-          unit="%/(m·s)"
-          fmt={(v) => v.toFixed(1)}
-          onChange={(v) => s.set({ ki: v })}
-        />
-        <Slider
-          label="Kd  (derivative)"
-          value={s.kd}
-          min={0}
-          max={300}
-          step={1}
-          unit="%·s/m"
-          fmt={(v) => v.toFixed(0)}
-          onChange={(v) => s.set({ kd: v })}
-        />
-        <Slider
-          label="ωf  (D filter cutoff)"
-          value={s.wf}
-          min={0.5}
-          max={50}
-          step={0.5}
-          unit="rad/s"
-          fmt={(v) => v.toFixed(1)}
-          onChange={(v) => s.set({ wf: v })}
-        />
-      </Section>
-      )}
-
       <Section title="Disturbances">
+        {scn.distSliders.map((spec) => (
+          <Slider
+            key={spec.key}
+            spec={spec}
+            value={s.dist[spec.key] ?? 0}
+            onChange={(v) => s.set({ dist: { ...s.dist, [spec.key]: v } })}
+          />
+        ))}
         <Slider
-          label="Drain valve opening"
-          value={s.valve}
-          min={0}
-          max={1}
-          step={0.01}
-          unit="%"
-          fmt={(v) => (v * 100).toFixed(0)}
-          onChange={(v) => s.set({ valve: v })}
-        />
-        <Slider
-          label="Sensor noise σ"
+          spec={{
+            key: 'noise',
+            label: 'Sensor noise σ',
+            unit: scn.noise.unit,
+            min: 0,
+            max: scn.noise.max,
+            step: scn.noise.step,
+            fmt: (v) => (v * scn.noise.mul).toFixed(1),
+          }}
           value={s.noiseSigma}
-          min={0}
-          max={0.02}
-          step={0.0005}
-          unit="mm"
-          fmt={(v) => (v * 1000).toFixed(1)}
           onChange={(v) => s.set({ noiseSigma: v })}
         />
-        <p className="text-xs text-slate-500">
-          Click the tank (or the +50 L / −50 L buttons) to dump water in or scoop it out. Crank up
-          the noise with some Kd to see why the derivative term needs filtering.
-        </p>
+        {scn.impulses.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {scn.impulses.map((imp) => (
+              <button
+                key={imp.label}
+                title={imp.title}
+                className="rounded bg-sky-900/70 px-2 py-1 text-xs text-sky-200 hover:bg-sky-800"
+                onClick={() => engine.applyImpulse(imp.apply)}
+              >
+                {imp.label}
+              </button>
+            ))}
+          </div>
+        )}
       </Section>
     </div>
   )
@@ -236,39 +163,32 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function Slider({
-  label,
+  spec,
   value,
-  min,
-  max,
-  step,
-  unit,
-  fmt,
   onChange,
 }: {
-  label: string
+  spec: SliderSpec
   value: number
-  min: number
-  max: number
-  step: number
-  unit: string
-  fmt: (v: number) => string
   onChange: (v: number) => void
 }) {
+  // default format: as many decimals as the slider step implies
+  const decimals = (String(spec.step).split('.')[1] ?? '').length
+  const fmt = spec.fmt ?? ((v: number) => v.toFixed(decimals))
   return (
     <label className="block">
       <div className="mb-0.5 flex items-baseline justify-between text-xs">
-        <span className="text-slate-300">{label}</span>
+        <span className="text-slate-300">{spec.label}</span>
         <span className="font-mono text-sky-300">
-          {fmt(value)} <span className="text-slate-500">{unit}</span>
+          {fmt(value)} <span className="text-slate-500">{spec.unit}</span>
         </span>
       </div>
       <input
         type="range"
         className="w-full accent-sky-500"
         value={value}
-        min={min}
-        max={max}
-        step={step}
+        min={spec.min}
+        max={spec.max}
+        step={spec.step}
         onChange={(e) => onChange(Number(e.target.value))}
       />
     </label>

@@ -1,11 +1,13 @@
 import { useEffect, useRef } from 'react'
+import { getController } from '../controllers/registry'
+import { getScenario } from '../scenarios/registry'
 import { engine } from '../state/engine'
 import { useStore } from '../state/store'
 
 /**
  * The classic feedback block diagram — but live: signal values update on the
- * wires and the active path animates. This is the map between the textbook
- * picture and everything else on screen.
+ * wires and the active path animates. All labels come from the scenario
+ * descriptor and controller def; this component is scenario-agnostic.
  *
  *   r ──→(+)── e ──→ [Controller] ──→ [sat] ── u ──→ [Plant] ──┬──→ y
  *         ↑−                                    d ──↗           │
@@ -37,11 +39,12 @@ export function BlockDiagram() {
       ctx.clearRect(0, 0, W, H)
 
       const s = useStore.getState()
+      const scn = getScenario(s.scenarioId)
+      const cdef = getController(s.controllerId)
       const r = s.setpoint
       const y = engine.yMeas
       const e = r - y
       const u = engine.u
-      const pid = s.controller === 'pid'
 
       // ---- layout ----
       const midY = H * 0.42
@@ -156,7 +159,7 @@ export function BlockDiagram() {
         [sumX, fbY],
         [sumX, midY + 13],
       ])
-      arrow(sumX, midY + 13 + 8 - 8, 'u')
+      arrow(sumX, midY + 13, 'u')
 
       // ---- summing junction ----
       ctx.strokeStyle = '#94a3b8'
@@ -173,15 +176,8 @@ export function BlockDiagram() {
       ctx.fillText('−', sumX - 6, midY + 28)
 
       // ---- blocks ----
-      block(
-        ctlX,
-        ctlW,
-        pid ? 'PID  C(s)' : 'Relay',
-        pid
-          ? `${s.kp.toFixed(0)} + ${s.ki.toFixed(1)}/s + ${s.kd.toFixed(0)}s`
-          : `Δ = ${s.band.toFixed(2)} m`,
-      )
-      block(plantX, plantW, 'Tank  G(s)', 'ẋ = f(x,u,d)')
+      block(ctlX, ctlW, cdef.label.split(' ')[0] === 'PID' ? 'PID  C(s)' : cdef.label, cdef.summary(s.ctl))
+      block(plantX, plantW, scn.diagram.plantLabel, scn.diagram.plantSub ?? 'ẋ = f(x,u,d)')
       // saturation block with its glyph
       ctx.fillStyle = '#1e293b'
       ctx.strokeStyle = '#94a3b8'
@@ -212,7 +208,9 @@ export function BlockDiagram() {
       ctx.fillStyle = '#e2e8f0'
       ctx.font = 'bold 11px ui-sans-serif, sans-serif'
       ctx.fillText(
-        s.noiseSigma > 0 ? `Sensor + noise (σ=${(s.noiseSigma * 1000).toFixed(1)} mm)` : 'Sensor',
+        s.noiseSigma > 0
+          ? `Sensor + noise (σ=${(s.noiseSigma * scn.noise.mul).toFixed(1)} ${scn.noise.unit})`
+          : 'Sensor',
         sensX + sensW / 2,
         fbY + 4,
       )
@@ -227,20 +225,20 @@ export function BlockDiagram() {
       ctx.fillStyle = '#f87171'
       ctx.font = mono
       ctx.textAlign = 'center'
-      ctx.fillText(`d: valve ${(s.valve * 100).toFixed(0)}%, dumps`, dX, midY - blockH / 2 - 40)
+      ctx.fillText(scn.diagram.dSummary(s.dist), dX, midY - blockH / 2 - 40)
 
       // ---- live signal values ----
-      sig((x0 + sumX) / 2, midY, `r = ${r.toFixed(2)} m`, '#4ade80')
+      sig((x0 + sumX) / 2, midY, `r = ${scn.y.fmt(r)}`, '#4ade80')
       sig(
         (sumX + ctlX + 13) / 2 + 8,
         midY,
-        `e = ${e >= 0 ? '+' : ''}${e.toFixed(3)} m`,
+        `e = ${e >= 0 ? '+' : ''}${scn.y.fmt(e)}`,
         '#e2e8f0',
         false, // below the wire — keeps clear of the r label
       )
       sig((satX + satW + plantX) / 2, midY, `u = ${u.toFixed(0)}%`, '#fbbf24')
-      sig((plantX + plantW + outX) / 2 + 14, midY, `y = ${y.toFixed(3)} m`, '#38bdf8')
-      sig((sensX + sumX) / 2, fbY, `${y.toFixed(3)} m`, '#38bdf8', false)
+      sig((plantX + plantW + outX) / 2 + 14, midY, `y = ${scn.y.fmt(y)}`, '#38bdf8')
+      sig((sensX + sumX) / 2, fbY, scn.y.fmt(y), '#38bdf8', false)
     }
 
     raf = requestAnimationFrame(draw)

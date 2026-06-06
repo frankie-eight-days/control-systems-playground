@@ -1,4 +1,4 @@
-import type { Plant } from '../plant'
+import type { Plant } from '../../sim/plant'
 
 /**
  * Gravity-drained water tank with a lagged pump.
@@ -32,14 +32,19 @@ export class TankPlant implements Plant<TankDisturbances> {
     const aEff = TANK.cd * TANK.aOrificeMax * Math.min(1, Math.max(0, d.valve))
     const qOut = aEff * Math.sqrt(2 * TANK.g * Math.max(h, 0))
     const uClamped = Math.min(100, Math.max(0, u))
+    // Hard tank limits: no inflow effect once brim-full (overflow spills),
+    // no outflow once empty. Keeps RK4 inside physical bounds.
+    let hdot = (qIn - qOut) / TANK.area
+    if (h >= TANK.height && hdot > 0) hdot = 0
+    if (h <= 0 && hdot < 0) hdot = 0
     return [
-      (qIn - qOut) / TANK.area, // ḣ
+      hdot,
       ((uClamped / 100) * TANK.qMax - qIn) / TANK.pumpTau, // q̇_in
     ]
   }
 
   output(x: number[]): number {
-    return x[0]
+    return Math.min(TANK.height, Math.max(0, x[0]))
   }
 
   equilibrium(y: number, d: TankDisturbances): { x: number[]; u: number } {
@@ -55,3 +60,5 @@ export class TankPlant implements Plant<TankDisturbances> {
     return aEff * Math.sqrt(2 * TANK.g * Math.max(h, 0))
   }
 }
+
+export const tankPlant = new TankPlant()
