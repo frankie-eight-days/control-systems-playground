@@ -66,14 +66,11 @@ function drawFeedback(ctx: CanvasRenderingContext2D, a: FeedbackArgs) {
   const yChanGate = yMidBand - 9
   const yChanSense = yMidBand + 9
 
-  // Section header + a thin separator rule above the feedback band.
-  ctx.strokeStyle = '#1e293b'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(12, yFb - 56)
-  ctx.lineTo(W * 0.62, yFb - 56)
-  ctx.stroke()
-  label('FEEDBACK / COMPENSATOR', 12, yFb - 60, VIOLET, 'left', 'bold 11px ui-monospace, monospace')
+  // Faint region tint behind the feedback band (groups it as a sub-circuit
+  // without any wire-like border — conductors stay the only line-like things).
+  ctx.fillStyle = 'rgba(167, 139, 250, 0.05)'
+  ctx.fillRect(6, yFb - 52, W - 12, yFb + 58 - (yFb - 52))
+  label('FEEDBACK / COMPENSATOR', 12, yFb - 58, VIOLET, 'left', 'bold 11px ui-monospace, monospace')
 
   // Horizontal flow:  vo → divider → R1 → (−)op-amp(+)←Vref → Vc → PWM → gates.
   // Spread the stages with real gaps so the Zf network above the op-amp and the
@@ -119,7 +116,8 @@ function drawFeedback(ctx: CanvasRenderingContext2D, a: FeedbackArgs) {
   ctx.lineTo(xDiv, yFb - 24) // into the divider
   ctx.stroke()
   dot(xLoad, yTop, 3.5, VIOLET) // visible tap dot on the output rail
-  label('vo sense', xDiv + 4, yChanSense + 11, VIOLET, 'left', small)
+  // label on the sense lane toward the right (away from the FEEDBACK header)
+  label('vo sense', xRight - 4, yChanSense - 5, VIOLET, 'right', small)
 
   // --- resistive divider Rfb1/Rfb2: vo-sense in at top → Rfb1 → fb node (to
   // R1) → Rfb2 → ground. Two vertical resistor boxes, wires drawn between them
