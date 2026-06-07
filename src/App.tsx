@@ -42,7 +42,8 @@ export default function App() {
             DEV — live, hot-reloads
           </span>
         )}
-        <nav className="flex items-baseline gap-1">
+        {/* 11 scenarios and counting — wrap into rows instead of overflowing */}
+        <nav className="flex flex-wrap items-baseline gap-1">
           {scenarios.map((s) => (
             <button
               key={s.id}

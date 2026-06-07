@@ -131,6 +131,10 @@ Each scenario teammate owns exactly one folder: `src/scenarios/<id>/`.
 8. If your loop has real structure (cascade, transforms, nonlinear pipeline),
    provide `DiagramView` — the generic single-loop block diagram is a wrong
    picture for it. Draw the textbook structure with live signal values.
+9. Authoring order: keep the STUB export in index.ts until every file it
+   will import exists and compiles — a dangling import in index.ts takes the
+   whole dev server down for everyone (the registry imports your folder).
+   Build plant → scene → theory → diagram first, wire index.ts LAST.
 
 **Verify your work (no `npm run build` — it races other teammates on dist/):**
 

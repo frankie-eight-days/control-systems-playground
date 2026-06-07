@@ -14,6 +14,9 @@ const NAV = [
   ['pmsm-torque', /PMSM torque/],
   ['pmsm-speed', /PMSM speed/],
   ['jet', /Fighter/],
+  ['ballbeam', /Ball & beam/],
+  ['pendulum', /pendulum/i],
+  ['maglev', /Magnetic levitation|Maglev/],
   ['tank', /Water tank/],
 ]
 

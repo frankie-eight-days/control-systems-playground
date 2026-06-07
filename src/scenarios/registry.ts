@@ -1,6 +1,9 @@
+import { ballbeamScenario } from './ballbeam'
 import { buckScenario } from './buck'
 import { cruiseScenario } from './cruise'
 import { jetScenario } from './jet'
+import { maglevScenario } from './maglev'
+import { pendulumScenario } from './pendulum'
 import { motorScenario } from './motor'
 import { pmsmSpeedScenario, pmsmTorqueScenario } from './pmsm'
 import { tankScenario } from './tank'
@@ -22,6 +25,9 @@ export const scenarios: ScenarioDef[] = [
   pmsmTorqueScenario,
   pmsmSpeedScenario,
   jetScenario,
+  ballbeamScenario,
+  pendulumScenario,
+  maglevScenario,
 ]
 
 export function getScenario(id: string): ScenarioDef {
