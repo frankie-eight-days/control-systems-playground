@@ -1,5 +1,7 @@
 # Control Systems Playground
 
+**Live: [control-systems-playground.vercel.app](https://control-systems-playground.vercel.app)**
+
 Interactive, physics-based control-systems sandbox for electrical engineers —
 **runs entirely in your browser**, no server, no MATLAB.
 
