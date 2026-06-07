@@ -42,7 +42,7 @@ interface FeedbackArgs extends DrawHelpers {
   H: number
   yFb: number
   yBot: number
-  xVo: number
+  xLoad: number
   yTop: number
   xHS: number
   net: CompensatorNetwork
@@ -56,12 +56,15 @@ interface FeedbackArgs extends DrawHelpers {
  * box; for the hysteretic controller a comparator with its ±ΔV/2 band.
  */
 function drawFeedback(ctx: CanvasRenderingContext2D, a: FeedbackArgs) {
-  const { W, yFb, yBot, xVo, yTop, xHS, net, ref, wire, dot, label } = a
+  const { W, yFb, yBot, xLoad, yTop, xHS, net, ref, wire, dot, label } = a
   const small = '10px ui-monospace, monospace'
   const part = (name: string) => net.parts.find((p) => p.name === name)?.value ?? '—'
-  // Clear horizontal routing channel between the power stage and the feedback
-  // header — used by both the vo-sense drop and the gate-drive return.
-  const yChan = (yBot + (yFb - 56)) / 2
+  // Two stacked routing lanes in the clear band between the power stage and the
+  // feedback header: the gate-drive return (upper) and the vo-sense (lower) get
+  // their OWN horizontal lane so the two signal paths never share one.
+  const yMidBand = (yBot + (yFb - 56)) / 2
+  const yChanGate = yMidBand - 9
+  const yChanSense = yMidBand + 9
 
   // Section header + a thin separator rule above the feedback band.
   ctx.strokeStyle = '#1e293b'
@@ -100,19 +103,23 @@ function drawFeedback(ctx: CanvasRenderingContext2D, a: FeedbackArgs) {
     ctx.stroke()
   }
 
-  // --- vo sense: tap the vo node, drop through the clear channel, then run
-  // left to the top of the divider. Drawn in violet (a sense wire, distinct
-  // from the grey power rails it orthogonally crosses once). ---
+  // --- vo sense: tap the output rail at the LOAD node, stub out past the load
+  // (the rail ends there — no overlap), drop the RIGHT MARGIN to the clear
+  // channel, then run left to the divider. The sense drop owns the far-right
+  // channel; the gate-drive owns the far-left — the two never share a lane.
+  // Solid violet, clear of every grey power rail. ---
+  const xRight = W - 10
   ctx.strokeStyle = VIOLET
   ctx.lineWidth = 1.4
   ctx.beginPath()
-  ctx.moveTo(xVo, yTop)
-  ctx.lineTo(xVo, yChan)
-  ctx.lineTo(xDiv, yChan)
-  ctx.lineTo(xDiv, yFb - 24)
+  ctx.moveTo(xLoad, yTop) // tap on the vo rail at the load node
+  ctx.lineTo(xRight, yTop) // stub right, past the load (rail has ended)
+  ctx.lineTo(xRight, yChanSense) // down the right margin
+  ctx.lineTo(xDiv, yChanSense) // left along the sense lane
+  ctx.lineTo(xDiv, yFb - 24) // into the divider
   ctx.stroke()
-  dot(xVo, yTop, 3.5, VIOLET) // visible tap dot on the output rail
-  label('vo sense', xDiv + 4, yChan - 5, VIOLET, 'left', small)
+  dot(xLoad, yTop, 3.5, VIOLET) // visible tap dot on the output rail
+  label('vo sense', xDiv + 4, yChanSense + 11, VIOLET, 'left', small)
 
   // --- resistive divider Rfb1/Rfb2: vo-sense in at top → Rfb1 → fb node (to
   // R1) → Rfb2 → ground. Two vertical resistor boxes, wires drawn between them
@@ -269,15 +276,15 @@ function drawFeedback(ctx: CanvasRenderingContext2D, a: FeedbackArgs) {
   // rail, then across to QH's gate. (QL is driven complementarily — labelled,
   // not separately wired, to keep the gate drive off the power stage.)
   ctx.moveTo(xPwm, yFb - 14)
-  ctx.lineTo(xPwm, yChan)
-  ctx.lineTo(xMargin, yChan)
+  ctx.lineTo(xPwm, yChanGate)
+  ctx.lineTo(xMargin, yChanGate)
   ctx.lineTo(xMargin, yGate)
   ctx.lineTo(xHS, yGate)
   ctx.lineTo(xHS, yTop - 11) // down into QH's gate stub
   ctx.stroke()
   ctx.setLineDash([])
   // label on the top gate rail, left of QH where it's clear
-  label('gate drive (QL = Q̄H, complementary)', xMargin + 4, yGate - 5, SKY, 'left', small)
+  label('gate drive (QL inverted)', xMargin + 4, yGate - 5, SKY, 'left', small)
 
   // --- component VALUE legend row (keeps the schematic itself uncluttered) ---
   const vals = net.parts.map((p) => `${p.name} ${p.value}`).join('   ')
@@ -625,7 +632,7 @@ export function BuckScene() {
       // vo tap → resistor divider → error amp (op-amp) with the live Type II/III
       // RC network → PWM → back up to the gate drive. Component values are
       // synthesized from the active controller's sliders (compensatorNetwork.ts).
-      drawFeedback(ctx, { W, H, yFb, yBot, xVo, yTop, xHS, net, ref: p.setpoint, wire, dot, label })
+      drawFeedback(ctx, { W, H, yFb, yBot, xLoad, yTop, xHS, net, ref: p.setpoint, wire, dot, label })
 
       // ----- annotations -----
       label(`D·Vin = ${((duty / 100) * d.vin).toFixed(2)} V`, 12, 20, '#94a3b8', 'left')

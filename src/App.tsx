@@ -34,16 +34,12 @@ export default function App() {
     <div className="flex h-screen flex-col bg-slate-950 text-slate-200">
       <header className="flex items-baseline gap-3 border-b border-slate-800 px-4 py-2">
         <h1 className="text-base font-bold tracking-tight">Control Systems Playground</h1>
-        {/* Two-port workflow: the dev server hot-reloads under active agent
-            work; the preview port serves the last verified build. Label them
-            so "why don't I see X" is answerable at a glance. */}
-        {import.meta.env.DEV ? (
+        {/* Local two-port workflow: the dev server hot-reloads under active
+            agent work — badge it so it can't be confused with a static build.
+            Production builds (local preview AND the public site) show nothing. */}
+        {import.meta.env.DEV && (
           <span className="rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
             DEV — live, hot-reloads
-          </span>
-        ) : (
-          <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold text-slate-400">
-            PREVIEW — last verified build
           </span>
         )}
         <nav className="flex items-baseline gap-1">
