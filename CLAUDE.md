@@ -128,6 +128,9 @@ Each scenario teammate owns exactly one folder: `src/scenarios/<id>/`.
    clickable where natural via `engine.applyImpulse`.
 7. Presets: 3–5, each demonstrating a named behavior, with `desc` strings
    that say what to watch for.
+8. If your loop has real structure (cascade, transforms, nonlinear pipeline),
+   provide `DiagramView` — the generic single-loop block diagram is a wrong
+   picture for it. Draw the textbook structure with live signal values.
 
 **Verify your work (no `npm run build` — it races other teammates on dist/):**
 

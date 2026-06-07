@@ -1,6 +1,8 @@
 import { buckScenario } from './buck'
 import { cruiseScenario } from './cruise'
+import { jetScenario } from './jet'
 import { motorScenario } from './motor'
+import { pmsmSpeedScenario, pmsmTorqueScenario } from './pmsm'
 import { tankScenario } from './tank'
 import { thermalScenario } from './thermal'
 import type { ScenarioDef } from './types'
@@ -17,6 +19,9 @@ export const scenarios: ScenarioDef[] = [
   thermalScenario,
   motorScenario,
   buckScenario,
+  pmsmTorqueScenario,
+  pmsmSpeedScenario,
+  jetScenario,
 ]
 
 export function getScenario(id: string): ScenarioDef {

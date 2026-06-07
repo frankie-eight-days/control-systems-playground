@@ -117,4 +117,13 @@ export interface ScenarioDef {
   Scene: ComponentType
   /** Plant theory sections (nonlinear ODE, linearization) with live values. */
   PlantTheory: ComponentType
+  /**
+   * Optional override for the Diagram tab. The generic block diagram draws a
+   * single SISO loop — honest for simple plants, but structurally wrong as a
+   * PICTURE for e.g. FOC (transforms, inverter, cascade) or fuzzy control
+   * (fuzzify → rules → defuzzify). Scenarios whose loop has real structure
+   * should draw it themselves (live signal values expected, same canvas
+   * idioms as ui/BlockDiagram.tsx).
+   */
+  DiagramView?: ComponentType
 }

@@ -148,6 +148,32 @@ export function freqAnalysis(
   }
 }
 
+/**
+ * Plant-only Bode sweep — used when the active controller is nonlinear
+ * (relay, fuzzy): there is no L/T/S, but G(jω) is still perfectly real.
+ */
+export function plantBode(
+  ss: StateSpace,
+  wMin: number,
+  wMax: number,
+  nPoints = 400,
+): { w: number[]; gMagDb: number[]; gPhaseDeg: number[] } {
+  const w: number[] = []
+  const gMagDb: number[] = []
+  const gPhaseDeg: number[] = []
+  const logMin = Math.log10(wMin)
+  const logMax = Math.log10(wMax)
+  for (let i = 0; i < nPoints; i++) {
+    const wi = 10 ** (logMin + ((logMax - logMin) * i) / (nPoints - 1))
+    const G = plantResponse(ss, wi)
+    w.push(wi)
+    gMagDb.push(db(cAbs(G)))
+    gPhaseDeg.push((cArg(G) * 180) / Math.PI)
+  }
+  unwrap(gPhaseDeg)
+  return { w, gMagDb, gPhaseDeg }
+}
+
 /** Remove ±360° jumps from atan2 branch cuts. */
 function unwrap(phaseDeg: number[]) {
   for (let i = 1; i < phaseDeg.length; i++) {

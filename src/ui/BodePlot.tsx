@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type uPlot from 'uplot'
-import { freqAnalysis, poles2, type FreqAnalysis } from '../analysis/freq'
+import { eigenvalues, maxRealPole } from '../analysis/eig'
+import { freqAnalysis, plantBode, type FreqAnalysis } from '../analysis/freq'
 import { linearize } from '../analysis/linearize'
 import { getController } from '../controllers/registry'
 import { getScenario } from '../scenarios/registry'
@@ -36,25 +37,12 @@ interface Analysis extends FreqAnalysis {
   /** Hz display: divide rad/s by 2π. */
   wDiv: number
   freqUnit: string
+  /** Any plant pole in the open RHP — the classic PM reading is unreliable. */
+  openLoopUnstable: boolean
 }
 
-const EMPTY: Analysis = {
-  w: [],
-  gMagDb: [],
-  gPhaseDeg: [],
-  cMagDb: [],
-  cParts: [],
-  lMagDb: [],
-  lPhaseDeg: [],
-  tMagDb: [],
-  sMagDb: [],
-  margins: { wgc: null, pm: null, wpc: null, gmDb: null },
-  closed: { wBw: null, mtDb: -200, msDb: -200 },
-  u0: 0,
-  poles: [],
-  wDiv: 1,
-  freqUnit: 'rad/s',
-}
+const NO_MARGINS = { wgc: null, pm: null, wpc: null, gmDb: null }
+const NO_CLOSED = { wBw: null, mtDb: -200, msDb: -200 }
 
 export function BodePlot() {
   const scenarioId = useStore((s) => s.scenarioId)
@@ -71,23 +59,42 @@ export function BodePlot() {
   const isChart = tab !== 'D' && !isNote
 
   const data: Analysis = useMemo(() => {
-    const response = cdef.response
-    if (!response) return EMPTY
     const eq = scn.plant.equilibrium(setpoint, dist)
     const ss = linearize(scn.plant, eq.x, eq.u, dist)
+    const common = {
+      u0: eq.u,
+      poles: eigenvalues(ss.A),
+      wDiv: scn.freqDisplay === 'Hz' ? 2 * Math.PI : 1,
+      freqUnit: scn.freqDisplay,
+      openLoopUnstable: maxRealPole(ss.A) > 1e-6,
+    }
+    const response = cdef.response
+    if (!response) {
+      // Nonlinear controller: no L/T/S/C — but the PLANT is still LTI, so
+      // the G tab gets a plant-only sweep (the explainer promises as much).
+      const g = plantBode(ss, scn.wSweep[0], scn.wSweep[1])
+      return {
+        ...common,
+        w: g.w,
+        gMagDb: g.gMagDb,
+        gPhaseDeg: g.gPhaseDeg,
+        cMagDb: [],
+        cParts: [],
+        lMagDb: [],
+        lPhaseDeg: [],
+        tMagDb: [],
+        sMagDb: [],
+        margins: NO_MARGINS,
+        closed: NO_CLOSED,
+      }
+    }
     const parts = (cdef.parts ?? []).map((part) => ({
       label: part.label,
       color: part.color,
       mag: (w: number) => part.mag(w, ctl),
     }))
     const fa = freqAnalysis(ss, (w) => response(ctl, w), parts, scn.wSweep[0], scn.wSweep[1])
-    return {
-      ...fa,
-      u0: eq.u,
-      poles: ss.B.length === 2 ? poles2(ss.A) : [],
-      wDiv: scn.freqDisplay === 'Hz' ? 2 * Math.PI : 1,
-      freqUnit: scn.freqDisplay,
-    }
+    return { ...fa, ...common }
   }, [scn, cdef, ctl, setpoint, dist])
 
   const dataRef = useRef(data)
@@ -140,7 +147,11 @@ export function BodePlot() {
         </span>
       </div>
       {tab === 'D' ? (
-        <BlockDiagram />
+        scn.DiagramView ? (
+          <scn.DiagramView key={scn.id} />
+        ) : (
+          <BlockDiagram />
+        )
       ) : isNote ? (
         <NonlinearNote label={cdef.label} />
       ) : (
@@ -350,8 +361,11 @@ function Footer({
 
   let body: React.ReactNode
   if (tab === 'L') {
-    const pmClass = colorFor(m.pm, 45, 20)
-    const gmClass = colorFor(m.gmDb, 10, 4)
+    // Crossover-based PM/GM readings assume an open-loop-STABLE plant. With
+    // RHP plant poles (jet!), stability is a Nyquist encirclement count and
+    // the simple "180° + ∠L" number can be nonsense — warn, don't color.
+    const pmClass = data.openLoopUnstable ? 'text-slate-300' : colorFor(m.pm, 45, 20)
+    const gmClass = data.openLoopUnstable ? 'text-slate-300' : colorFor(m.gmDb, 10, 4)
     body = (
       <>
         <span className={pmClass}>
@@ -362,6 +376,12 @@ function Footer({
           GM = {m.gmDb == null ? '∞' : `${m.gmDb.toFixed(1)} dB`}
           {m.wpc != null && <span className="text-slate-500"> @ ω₍pc₎={fmtW(m.wpc)}</span>}
         </span>
+        {data.openLoopUnstable && (
+          <span className="text-amber-400">
+            ⚠ open-loop-unstable plant — crossover PM/GM unreliable; judge by Nyquist
+            encirclements (roadmap) or the time response
+          </span>
+        )}
       </>
     )
   } else if (tab === 'T') {
