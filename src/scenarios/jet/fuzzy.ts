@@ -66,15 +66,32 @@ export const RULES: number[][] = [
   [    2, 1, 0, 0, 0 ], //  PB
 ]
 
-export interface FuzzyEval {
-  /** Normalized, clamped inputs actually fuzzified. */
+/** Shared antecedent stage: fuzzify both inputs and fire every (i,j) rule with
+ *  the min-AND. Used by BOTH the Mamdani and the Takagi–Sugeno laws — the only
+ *  thing that differs downstream is the consequent (output sets vs. local
+ *  linear functions). Returns the membership vectors and the 5×5 firing grid. */
+export interface Antecedents {
   E: number
   Edot: number
-  /** Membership vectors μ(E), μ(Ė) over NB..PB. */
   muE: number[]
   muEdot: number[]
   /** Per-rule firing strength (min of the two antecedents), [5][5]. */
   fire: number[][]
+}
+
+export function fuzzifyAntecedents(E: number, Edot: number): Antecedents {
+  const muE = memberships(E)
+  const muEdot = memberships(Edot)
+  const fire: number[][] = Array.from({ length: 5 }, () => new Array(5).fill(0))
+  for (let i = 0; i < 5; i++) {
+    for (let j = 0; j < 5; j++) {
+      fire[i][j] = Math.min(muE[i], muEdot[j]) // AND = min
+    }
+  }
+  return { E, Edot, muE, muEdot, fire }
+}
+
+export interface FuzzyEval extends Antecedents {
   /** Aggregated weight on each output singleton, NB..PB. */
   outW: number[]
   /** Defuzzified normalized output U ∈ [−1,1]. */
@@ -83,20 +100,17 @@ export interface FuzzyEval {
 
 /**
  * Full Mamdani evaluation of the normalized inputs. `E`,`Edot` are the already
- * scaled-and-clamped crisp inputs. Returns every intermediate so the theory
- * panel can shade memberships and light up the rule grid live.
+ * scaled-and-clamped crisp inputs. Shares the antecedent stage with T-S; the
+ * Mamdani-specific part is the max-aggregation onto output singletons + centroid
+ * defuzzification. Returns every intermediate for the live visualizations.
  */
 export function evalFuzzy(E: number, Edot: number): FuzzyEval {
-  const muE = memberships(E)
-  const muEdot = memberships(Edot)
-  const fire: number[][] = Array.from({ length: 5 }, () => new Array(5).fill(0))
+  const ante = fuzzifyAntecedents(E, Edot)
   const outW = new Array(5).fill(0)
   for (let i = 0; i < 5; i++) {
     for (let j = 0; j < 5; j++) {
-      const w = Math.min(muE[i], muEdot[j]) // AND = min
-      fire[i][j] = w
       const out = RULES[i][j]
-      if (w > outW[out]) outW[out] = w // aggregate = max
+      if (ante.fire[i][j] > outW[out]) outW[out] = ante.fire[i][j] // aggregate = max
     }
   }
   let num = 0
@@ -106,7 +120,7 @@ export function evalFuzzy(E: number, Edot: number): FuzzyEval {
     den += outW[k]
   }
   const U = den > 1e-9 ? num / den : 0
-  return { E, Edot, muE, muEdot, fire, outW, U }
+  return { ...ante, outW, U }
 }
 
 /** Sample the normalized control surface U(E,Ė) on an n×n grid over [−1,1]². */

@@ -5,7 +5,10 @@ import { seriesColors } from '../../ui/colors'
 import { Tex } from '../../ui/Math'
 import { TheorySection } from '../../ui/TheorySection'
 import { FuzzyController } from './fuzzy'
+import { FuzzifyTab, RulesSurfaceTab } from './fuzzyTabs'
 import { FuzzyTheory } from './fuzzyTheory'
+import { A0, B0, GAIN_SPREAD, TSController } from './fuzzyTS'
+import { BlendedSurfaceTab, LocalGainsTab, useLiveTS } from './tsTabs'
 
 /**
  * Jet-local controller types, registered from index.ts at module load
@@ -173,7 +176,97 @@ export const fuzzyDef: ControllerDef = {
   // "nonlinear controller" explainer; stability is demonstrated empirically
   // in the scene + strip charts and dissected in the fuzzy Theory panel.
   response: null,
+  // Replace the dead L/T/C tabs (a fuzzy law has no C(jω)) with live views of
+  // what the controller actually IS — fuzzify → rules → defuzzify — at full
+  // panel size. The Bode panel renders [Diagram, ...these, G].
+  analysisTabs: [
+    { id: 'fuzzify', label: 'Fuzzify', hint: 'live membership functions', View: FuzzifyTab },
+    {
+      id: 'rules',
+      label: 'Rules + Surface',
+      hint: 'live rule activations & control surface',
+      View: RulesSurfaceTab,
+    },
+  ],
   summary: (p) =>
     `fuzzy 5×5, ke=${(p.ke ?? 0).toFixed(2)} kde=${(p.kde ?? 0).toFixed(2)} ku=${(p.ku ?? 0).toFixed(2)}`,
   Theory: FuzzyTheory,
+}
+
+/* ------------------------------- fuzzy-ts ------------------------------- */
+
+function TSTheory() {
+  const live = useLiveTS()
+  return (
+    <TheorySection title="Controller — Takagi–Sugeno fuzzy (interpolated local PD)">
+      <Tex
+        block
+        tex={`U = \\frac{\\sum_{ij} w_{ij}\\,(a_{ij}E + b_{ij}\\dot E)}{\\sum_{ij} w_{ij}},\\quad w_{ij}=\\min(\\mu_{E,i},\\mu_{\\dot E,j})`}
+      />
+      <p className="text-[11px] text-slate-400">
+        Same fuzzifier and 5×5 antecedents as the Mamdani law (min-AND firing), but each rule's
+        consequent is a <em>local linear controller</em> u<sub>ij</sub> = a<sub>ij</sub>E + b
+        <sub>ij</sub>Ė, and the output is their firing-weighted <strong>average — there is no
+        defuzzification step</strong>. That is the whole difference: Mamdani aggregates output sets
+        and finds a centroid; T-S interpolates between local linear laws. Then u = 50 + k<sub>u</sub>·U·50
+        with the airframe's negative-control-power sign baked into (a<sub>0</sub>, b<sub>0</sub>) = ({A0},{' '}
+        {B0}).
+      </p>
+      <p className="text-[11px] text-slate-400">
+        This is <strong>gain scheduling, formalized</strong>: away from trim the corner cells run
+        hotter (gain spread {GAIN_SPREAD.toFixed(1)}× at the edges), so big upsets get more aggressive
+        local gains — but smoothly blended, never switched. The <span className="font-mono">uniformity</span>{' '}
+        slider equalises the table: at 1 every cell is identical and the weighted average collapses to
+        U = a·E + b·Ė exactly.
+      </p>
+      <div className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-[11px]">
+        {live.degenerate ? (
+          <span className="text-emerald-300">
+            ✓ uniformity = {live.uniformity.toFixed(2)} → all cells equal → this is{' '}
+            <strong>currently exactly a linear PD</strong> (a={live.aTab[2][2].toFixed(2)}, b=
+            {live.bTab[2][2].toFixed(2)}). Match it against PID (fly-by-wire) at K<sub>p</sub>=k
+            <sub>u</sub>k<sub>e</sub>·50, K<sub>d</sub>=k<sub>u</sub>k<sub>de</sub>·50 — the responses
+            coincide.
+          </span>
+        ) : (
+          <span className="text-amber-300/90">
+            uniformity = {live.uniformity.toFixed(2)} → cells differ (centre a=
+            {live.aTab[2][2].toFixed(2)} vs corner a={live.aTab[0][0].toFixed(2)}) → a genuinely
+            nonlinear schedule. Slide uniformity → 1 to collapse it to exactly PD.
+          </span>
+        )}
+      </div>
+      <p className="text-[11px] text-slate-500">
+        Stability, honestly: unlike Mamdani, a T-S model is a convex blend of linear subsystems, so
+        the <em>plant-side</em> T-S framework admits LMI / parallel-distributed-compensation (PDC)
+        certificates — a common quadratic Lyapunov function across the local models proves closed-loop
+        stability when one exists. That machinery is real but applies to a T-S <em>plant</em> model;
+        here it motivates why T-S is the analyzable cousin of fuzzy control. For this controller-only
+        demo, stability is still shown empirically (the jet flies) — no overclaim.
+      </p>
+    </TheorySection>
+  )
+}
+
+export const fuzzyTSDef: ControllerDef = {
+  id: 'fuzzy-ts',
+  label: 'Fuzzy (Takagi–Sugeno)',
+  create() {
+    const ts = new TSController()
+    return {
+      reset: () => ts.reset(),
+      update: (sp, y, dt, p) => ts.update(sp, y, dt, p),
+    }
+  },
+  // Nonlinear law (weighted-average of local PDs) — no C(jω). Its analysis
+  // tabs show the local-gain table and the blended surface (comparable to the
+  // Mamdani surface). The G plant tab remains.
+  response: null,
+  analysisTabs: [
+    { id: 'gains', label: 'Local gains', hint: 'live (a,b) per cell — local linear controllers', View: LocalGainsTab },
+    { id: 'surface', label: 'Blended surface', hint: 'u(e,ė) surface — compare with Mamdani', View: BlendedSurfaceTab },
+  ],
+  summary: (p) =>
+    `T-S 5×5, ke=${(p.ke ?? 0).toFixed(2)} ku=${(p.ku ?? 0).toFixed(2)}, unif=${(p.uniformity ?? 0).toFixed(2)}`,
+  Theory: TSTheory,
 }

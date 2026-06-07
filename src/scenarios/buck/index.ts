@@ -2,6 +2,7 @@ import { registerController } from '../../controllers/registry'
 import type { ScenarioDef } from '../types'
 import { BUCK_T } from './compensator'
 import { typeIIDef, typeIIIDef } from './controllers'
+import { BuckDiagram } from './diagram'
 import { buckPlant } from './plant'
 import { BuckScene } from './scene'
 import { BuckTheory } from './theory'
@@ -215,4 +216,5 @@ export const buckScenario: ScenarioDef = {
 
   Scene: BuckScene,
   PlantTheory: BuckTheory,
+  DiagramView: BuckDiagram,
 }

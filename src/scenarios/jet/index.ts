@@ -1,6 +1,6 @@
 import { registerController } from '../../controllers/registry'
 import type { ScenarioDef } from '../types'
-import { fuzzyDef, jetPidDef } from './controllers'
+import { fuzzyDef, fuzzyTSDef, jetPidDef } from './controllers'
 import { JetDiagram } from './diagram'
 import { jetPlant, MaOfCg } from './plant'
 import { gustHit, JetScene, noseWhack } from './scene'
@@ -10,6 +10,7 @@ import { JetTheory } from './theory'
 // before first render. Direct calls are safe — the registry is cycle-proof
 // (lazy `var` map; see controllers/registry.ts), exactly like buck Type II/III.
 registerController(fuzzyDef)
+registerController(fuzzyTSDef)
 registerController(jetPidDef)
 
 const rad2deg = 180 / Math.PI
@@ -68,6 +69,30 @@ export const jetScenario: ScenarioDef = {
       ],
       // Verified: holds trim against the RHP pole + recovers the +5° gust.
       defaults: { ke: 0.06, kde: 0.08, ku: 0.6, wf: 10 },
+    },
+    {
+      id: 'fuzzy-ts',
+      params: [
+        // Same ke/kde/ku scaling convention as the Mamdani law (so the surfaces
+        // are directly comparable). `uniformity` reshapes the local-gain table:
+        // 1 = all cells equal → exactly a linear PD; 0 = full corner-boosted schedule.
+        { key: 'ke', label: 'ke  (error gain)', unit: '1/°', min: 0.0, max: 0.3, step: 0.005 },
+        { key: 'kde', label: 'kde  (rate gain)', unit: 's/°', min: 0.0, max: 0.4, step: 0.005 },
+        { key: 'ku', label: 'ku  (output gain)', unit: '', min: 0.0, max: 2.5, step: 0.05 },
+        {
+          key: 'uniformity',
+          label: 'uniformity  (table flatness)',
+          unit: '',
+          min: 0,
+          max: 1,
+          step: 0.05,
+          fmt: (v) => (v >= 0.999 ? '1.00 = PD' : v.toFixed(2)),
+        },
+        { key: 'wf', label: 'ωf  (ė filter cutoff)', unit: 'rad/s', min: 2, max: 40, step: 1 },
+      ],
+      // Verified: flies trim/gust/whack/±15° steps; degenerate (uniformity=1)
+      // is exactly the linear PD and matches jet-pid at matched gains.
+      defaults: { ke: 0.06, kde: 0.08, ku: 0.6, uniformity: 0.35, wf: 10 },
     },
     {
       id: 'jet-pid',
@@ -144,8 +169,30 @@ export const jetScenario: ScenarioDef = {
       },
     },
     {
+      name: 'T-S — default (flies)',
+      desc: 'Takagi–Sugeno: same fuzzifier + 5×5 antecedents as Mamdani, but each rule is a local LINEAR controller and the output is their firing-weighted average — NO defuzzification. uniformity 0.35 gives a scheduled surface (corners run hotter); flies trim + gust just like Mamdani. Open the "Blended surface" tab and flip to Mamdani to compare the two surfaces on the same axes.',
+      set: {
+        controllerId: 'fuzzy-ts',
+        ctl: { ke: 0.06, kde: 0.08, ku: 0.6, uniformity: 0.35, wf: 10 },
+        dist: { cg: 0.75, gust: 0 },
+        setpoint: 0,
+        timeScale: 1,
+      },
+    },
+    {
+      name: 'T-S degenerate = PD',
+      desc: 'uniformity = 1: every cell holds the same (a,b), so the weighted average collapses to U = a·E + b·Ė — the T-S controller is EXACTLY a linear PD. With ku .5 / ke .16 / kde .08 that PD is Kp=4, Kd=2 — the very gains of the PID (fly-by-wire) preset. Switch between this and that PID: the responses are identical (gust/trim match to <0.01°). Lesson: fuzzy ↔ linear is a continuum, and this slider is the dial.',
+      set: {
+        controllerId: 'fuzzy-ts',
+        ctl: { ke: 0.16, kde: 0.08, ku: 0.5, uniformity: 1, wf: 20 },
+        dist: { cg: 0.75, gust: 0 },
+        setpoint: 0,
+        timeScale: 1,
+      },
+    },
+    {
       name: 'PID comparison (PD-heavy)',
-      desc: 'A conventional fly-by-wire PID (Kp 4, Kd 2, Ki 0) does the same job — its Bode tabs now populate (the fuzzy law has none). Crucially, drag Kd to 0: pure PI CANNOT stabilize this RHP-pole airframe at any gain. The D term is the phase lead the fuzzy rule table encodes in its ė column.',
+      desc: 'A conventional fly-by-wire PID (Kp 4, Kd 2, Ki 0) does the same job — its Bode tabs now populate (the fuzzy laws have none). It is exactly what the "T-S degenerate = PD" preset becomes. Crucially, drag Kd to 0: pure PI CANNOT stabilize this RHP-pole airframe at any gain. The D term is the phase lead the fuzzy rule table encodes in its ė column.',
       set: {
         controllerId: 'jet-pid',
         ctl: { kp: 4, ki: 0, kd: 2, wf: 20 },

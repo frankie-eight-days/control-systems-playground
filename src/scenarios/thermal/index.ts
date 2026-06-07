@@ -1,4 +1,5 @@
 import type { ScenarioDef } from '../types'
+import { ThermalDiagram } from './diagram'
 import { THERMAL, thermalPlant } from './plant'
 import { ThermalScene } from './scene'
 import { ThermalTheory } from './theory'
@@ -188,4 +189,5 @@ export const thermalScenario: ScenarioDef = {
 
   Scene: ThermalScene,
   PlantTheory: ThermalTheory,
+  DiagramView: ThermalDiagram,
 }

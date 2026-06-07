@@ -229,13 +229,12 @@ export function BlockDiagram() {
 
       // ---- live signal values ----
       sig((x0 + sumX) / 2, midY, `r = ${scn.y.fmt(r)}`, '#4ade80')
-      sig(
-        (sumX + ctlX + 13) / 2 + 8,
-        midY,
-        `e = ${e >= 0 ? '+' : ''}${scn.y.fmt(e)}`,
-        '#e2e8f0',
-        false, // below the wire — keeps clear of the r label
-      )
+      // e label sits below-right of the Σ junction: the sum→controller gap is
+      // too narrow for centered text (audit: it collided with the box).
+      ctx.fillStyle = '#e2e8f0'
+      ctx.font = mono
+      ctx.textAlign = 'left'
+      ctx.fillText(`e = ${e >= 0 ? '+' : ''}${scn.y.fmt(e)}`, sumX + 22, midY + 36)
       sig((satX + satW + plantX) / 2, midY, `u = ${u.toFixed(0)}%`, '#fbbf24')
       sig((plantX + plantW + outX) / 2 + 14, midY, `y = ${scn.y.fmt(y)}`, '#38bdf8')
       sig((sensX + sumX) / 2, fbY, scn.y.fmt(y), '#38bdf8', false)

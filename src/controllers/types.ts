@@ -22,6 +22,16 @@ export interface ResponsePart {
   mag(w: number, p: Record<string, number>): number | null
 }
 
+/** A custom analysis view shown as a Bode-panel tab for nonlinear
+ *  controllers (which have no L/T/C) — e.g. fuzzy membership functions,
+ *  rule activations, control surface. */
+export interface AnalysisTab {
+  id: string
+  label: string
+  hint: string
+  View: ComponentType
+}
+
 /**
  * A controller TYPE: time-domain implementation plus its frequency-domain
  * twin and UI metadata. The `response` MUST describe the exact structure
@@ -38,6 +48,12 @@ export interface ControllerDef {
   response: ((p: Record<string, number>, w: number) => Cx) | null
   /** Decomposition curves for the "C anatomy" tab (requires `response`). */
   parts?: ResponsePart[]
+  /**
+   * For nonlinear controllers (response: null): replacement tabs shown where
+   * L / T,S / C anatomy would be. Without these, a "No C(s)?" explainer tab
+   * is shown instead. The G (plant) tab always remains.
+   */
+  analysisTabs?: AnalysisTab[]
   /** Labels/colors for the term-decomposition strip chart (optional). */
   termInfo?: { label: string; color: string }[]
   /** One-line block-diagram summary, e.g. "60 + 1.5/s + 0·s". */

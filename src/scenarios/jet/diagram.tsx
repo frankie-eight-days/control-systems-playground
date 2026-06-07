@@ -3,6 +3,7 @@ import { getController } from '../../controllers/registry'
 import { engine } from '../../state/engine'
 import { useStore } from '../../state/store'
 import { CENTERS, evalFuzzy, RULES, type FuzzyEval } from './fuzzy'
+import { evalTS, type TSEval } from './fuzzyTS'
 import { JET, MaOfCg } from './plant'
 
 const rad2deg = 180 / Math.PI
@@ -37,7 +38,16 @@ function surfColor(u: number): string {
  * filter state). Returns the full fuzzy evaluation plus the crisp e, ė.
  */
 type FilterRef = { y: number; d: number; t: number }
-function liveFuzzy(filt: FilterRef, ke: number, kde: number, wf: number): FuzzyEval & { e: number; edot: number } {
+
+/** Live normalized fuzzy inputs from the plant + scaling gains, with a
+ *  render-time filtered ė. Shared by both the Mamdani and T-S pipeline draws
+ *  (they differ only in which inference they run on these same inputs). */
+function liveInputs(
+  filt: FilterRef,
+  ke: number,
+  kde: number,
+  wf: number,
+): { E: number; Edot: number; e: number; edot: number } {
   const sp = useStore.getState().setpoint
   const y = engine.x.length >= 3 ? engine.x[2] * rad2deg : 0
   const now = engine.t
@@ -52,7 +62,7 @@ function liveFuzzy(filt: FilterRef, ke: number, kde: number, wf: number): FuzzyE
   const edot = filt.d
   const E = Math.min(1, Math.max(-1, ke * e))
   const Edot = Math.min(1, Math.max(-1, kde * edot))
-  return { ...evalFuzzy(E, Edot), e, edot }
+  return { E, Edot, e, edot }
 }
 
 /**
@@ -127,7 +137,9 @@ export function JetDiagram() {
       }
 
       if (s.controllerId === 'fuzzy-pitch') {
-        drawFuzzyPipeline(ctx, W, H, s, filt.current, { line, arrow, label })
+        drawFuzzyPipeline(ctx, W, H, s, filt.current, { line, arrow, label }, 'mamdani')
+      } else if (s.controllerId === 'fuzzy-ts') {
+        drawFuzzyPipeline(ctx, W, H, s, filt.current, { line, arrow, label }, 'ts')
       } else {
         drawGenericLoop(ctx, W, H, s, { line, arrow, label })
       }
@@ -226,21 +238,24 @@ function drawMFfan(
   ctx.stroke()
 }
 
-/** Mini 5×5 rule grid; cells tinted by output set, lit by live firing μ. */
+/** Mini 5×5 rule grid; cells lit by live firing μ. Cell tint is the per-cell
+ *  consequent value: Mamdani → its output-set centre (RULES); T-S → its local
+ *  law value u_ij (passed as `tint`). Same antecedent grid either way. */
 function drawRuleGrid(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   cell: number,
   fire: number[][],
+  tint?: number[][],
 ) {
   for (let i = 0; i < 5; i++) {
     for (let j = 0; j < 5; j++) {
       const w = fire[i]?.[j] ?? 0
-      const out = RULES[i][j]
+      const val = tint ? Math.max(-1, Math.min(1, tint[i][j])) : CENTERS[RULES[i][j]]
       const cx = x + j * cell
       const cy = y + i * cell
-      ctx.fillStyle = surfColor(CENTERS[out])
+      ctx.fillStyle = surfColor(val)
       ctx.globalAlpha = 0.3 + 0.7 * w
       ctx.fillRect(cx + 0.5, cy + 0.5, cell - 1, cell - 1)
       ctx.globalAlpha = 1
@@ -260,12 +275,27 @@ function drawFuzzyPipeline(
   s: ReturnType<typeof useStore.getState>,
   filt: FilterRef,
   d: Draw,
+  kind: 'mamdani' | 'ts',
 ) {
   const ke = s.ctl.ke ?? 0.06
   const kde = s.ctl.kde ?? 0.08
   const ku = s.ctl.ku ?? 0.6
   const wf = s.ctl.wf || 10
-  const ev = liveFuzzy(filt, ke, kde, wf)
+  const inp = liveInputs(filt, ke, kde, wf)
+  // Same fuzzifier + 5×5 antecedents for both; only the consequent differs.
+  const mEv: FuzzyEval | null = kind === 'mamdani' ? evalFuzzy(inp.E, inp.Edot) : null
+  const tEv: TSEval | null = kind === 'ts' ? evalTS(inp.E, inp.Edot, s.ctl.uniformity ?? 0.35) : null
+  const ante = (mEv ?? tEv)!
+  const ev = {
+    e: inp.e,
+    edot: inp.edot,
+    E: inp.E,
+    Edot: inp.Edot,
+    muE: ante.muE,
+    muEdot: ante.muEdot,
+    fire: ante.fire,
+    U: ante.U,
+  }
   const sp = s.setpoint
   const cg = s.dist.cg ?? 0.75
   const theta = engine.x.length >= 3 ? engine.x[2] * rad2deg : 0
@@ -343,11 +373,11 @@ function drawFuzzyPipeline(
   d.arrow(bx, r1, 'r')
   d.label((fuzR + bx) / 2, r1 - 8, 'μ', '#7dd3fc')
 
-  // [RULE BASE] mini 5×5
-  stageBox(ctx, bx, boxY, wRule, boxH, 'RULE 5×5', '#a78bfa')
+  // [RULE BASE] mini 5×5 — for T-S the cells tint by their local-law value u_ij.
+  stageBox(ctx, bx, boxY, wRule, boxH, kind === 'ts' ? 'RULES (a,b)' : 'RULE 5×5', '#a78bfa')
   const cell = Math.min((wRule - 10) / 5, (boxH - 16) / 5)
   const gridW = cell * 5
-  drawRuleGrid(ctx, bx + (wRule - gridW) / 2, boxY + 14, cell, ev.fire)
+  drawRuleGrid(ctx, bx + (wRule - gridW) / 2, boxY + 14, cell, ev.fire, tEv ? tEv.uLocal : undefined)
   const ruleR = bx + wRule
 
   // wire → DEFUZZIFY
@@ -355,39 +385,77 @@ function drawFuzzyPipeline(
   d.line([[ruleR, r1], [bx, r1]])
   d.arrow(bx, r1, 'r')
 
-  // [DEFUZZIFICATION] centroid glyph + crisp U
-  stageBox(ctx, bx, boxY, wDef, boxH, 'DEFUZZIFY', '#34d399')
-  // draw the 5 output singletons as a little bar field with the centroid marker
+  // [TAIL] Mamdani: aggregate output sets + centroid. T-S: fired local linear
+  // laws u_ij = a·e+b·ė, blended by the firing-weighted average (NO centroid).
   const dx0 = bx + 6
   const dx1 = bx + wDef - 6
   const dyb = boxY + 34
-  const DX = (v: number) => dx0 + ((v + 1) / 2) * (dx1 - dx0)
-  ctx.strokeStyle = '#475569'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(dx0, dyb)
-  ctx.lineTo(dx1, dyb)
-  ctx.stroke()
-  for (let k = 0; k < 5; k++) {
-    const wgt = ev.outW[k]
-    ctx.strokeStyle = surfColor(CENTERS[k])
-    ctx.globalAlpha = 0.4 + 0.6 * wgt
-    ctx.lineWidth = 2
+  const DX = (v: number) => dx0 + ((Math.max(-1, Math.min(1, v)) + 1) / 2) * (dx1 - dx0)
+  if (kind === 'mamdani' && mEv) {
+    stageBox(ctx, bx, boxY, wDef, boxH, 'DEFUZZIFY', '#34d399')
+    ctx.strokeStyle = '#475569'
+    ctx.lineWidth = 1
     ctx.beginPath()
-    ctx.moveTo(DX(CENTERS[k]), dyb)
-    ctx.lineTo(DX(CENTERS[k]), dyb - 4 - wgt * 12)
+    ctx.moveTo(dx0, dyb)
+    ctx.lineTo(dx1, dyb)
     ctx.stroke()
-    ctx.globalAlpha = 1
+    for (let k = 0; k < 5; k++) {
+      const wgt = mEv.outW[k]
+      ctx.strokeStyle = surfColor(CENTERS[k])
+      ctx.globalAlpha = 0.4 + 0.6 * wgt
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(DX(CENTERS[k]), dyb)
+      ctx.lineTo(DX(CENTERS[k]), dyb - 4 - wgt * 12)
+      ctx.stroke()
+      ctx.globalAlpha = 1
+    }
+    ctx.fillStyle = '#fbbf24'
+    ctx.beginPath()
+    ctx.arc(DX(mEv.U), dyb, 3, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = '#fde68a'
+    ctx.font = '8px ui-monospace, monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText(`U=${mEv.U.toFixed(2)} (centroid)`, bx + wDef / 2, boxY + boxH - 3)
+  } else if (tEv) {
+    stageBox(ctx, bx, boxY, wDef, boxH, 'Σw·u / Σw', '#34d399')
+    // sub-label: this is the local-law blend, not a defuzzification
+    ctx.fillStyle = '#64748b'
+    ctx.font = '7px ui-monospace, monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText('local laws uᵢⱼ=a·e+b·ė', bx + wDef / 2, boxY + 20)
+    ctx.strokeStyle = '#475569'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(dx0, dyb)
+    ctx.lineTo(dx1, dyb)
+    ctx.stroke()
+    // each FIRED cell contributes a tick at its local output u_ij, weighted by w
+    for (let i = 0; i < 5; i++) {
+      for (let j = 0; j < 5; j++) {
+        const w = tEv.fire[i][j]
+        if (w < 0.02) continue
+        ctx.strokeStyle = surfColor(Math.max(-1, Math.min(1, tEv.uLocal[i][j])))
+        ctx.globalAlpha = 0.35 + 0.65 * w
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.moveTo(DX(tEv.uLocal[i][j]), dyb)
+        ctx.lineTo(DX(tEv.uLocal[i][j]), dyb - 4 - w * 12)
+        ctx.stroke()
+        ctx.globalAlpha = 1
+      }
+    }
+    // weighted-average marker (the blended U) — the interpolation result
+    ctx.fillStyle = '#fbbf24'
+    ctx.beginPath()
+    ctx.arc(DX(tEv.U), dyb, 3, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = '#fde68a'
+    ctx.font = '8px ui-monospace, monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText(`U=${tEv.U.toFixed(2)}${tEv.degenerate ? ' (=PD)' : ''}`, bx + wDef / 2, boxY + boxH - 3)
   }
-  // centroid marker (the defuzzified U)
-  ctx.fillStyle = '#fbbf24'
-  ctx.beginPath()
-  ctx.arc(DX(ev.U), dyb, 3, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.fillStyle = '#fde68a'
-  ctx.font = '8px ui-monospace, monospace'
-  ctx.textAlign = 'center'
-  ctx.fillText(`U=${ev.U.toFixed(2)}`, bx + wDef / 2, boxY + boxH - 3)
   const defR = bx + wDef
 
   // wire → ×ku
@@ -501,7 +569,9 @@ function drawFuzzyPipeline(
   ctx.font = '9px ui-sans-serif, sans-serif'
   ctx.textAlign = 'left'
   ctx.fillText(
-    'Mamdani FLC: fuzzify e, ė → fire the 5×5 rule base → defuzzify (centroid) → scale → elevator. No C(s) — a rule pipeline, not a transfer function.',
+    kind === 'ts'
+      ? 'Takagi–Sugeno: fuzzify e, ė → fire the 5×5 antecedents → each cell is a local linear law uᵢⱼ=a·e+b·ė → weighted average Σw·u/Σw (NO defuzzification) → ×kᵤ. Interpolated gain scheduling.'
+      : 'Mamdani FLC: fuzzify e, ė → fire the 5×5 rule base → defuzzify (centroid) → scale → elevator. No C(s) — a rule pipeline, not a transfer function.',
     pad,
     H - 3,
   )
@@ -630,7 +700,7 @@ function drawGenericLoop(
   ctx.font = '9px ui-sans-serif, sans-serif'
   ctx.textAlign = 'left'
   ctx.fillText(
-    'Linear PD/PID law: single SISO loop with a transfer function C(s). Switch to the fuzzy controller to see the rule-based pipeline.',
+    'jet-pid: a linear PD/PID law — a single SISO loop with a transfer function C(s). The fuzzy controllers (Mamdani, Takagi–Sugeno) instead draw their inference pipeline here.',
     pad,
     H - 4,
   )

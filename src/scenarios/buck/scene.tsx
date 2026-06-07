@@ -41,6 +41,7 @@ interface FeedbackArgs extends DrawHelpers {
   W: number
   H: number
   yFb: number
+  yBot: number
   xVo: number
   yTop: number
   xHS: number
@@ -55,9 +56,12 @@ interface FeedbackArgs extends DrawHelpers {
  * box; for the hysteretic controller a comparator with its ±ΔV/2 band.
  */
 function drawFeedback(ctx: CanvasRenderingContext2D, a: FeedbackArgs) {
-  const { W, yFb, xVo, yTop, xHS, net, ref, wire, dot, label } = a
+  const { W, yFb, yBot, xVo, yTop, xHS, net, ref, wire, dot, label } = a
   const small = '10px ui-monospace, monospace'
   const part = (name: string) => net.parts.find((p) => p.name === name)?.value ?? '—'
+  // Clear horizontal routing channel between the power stage and the feedback
+  // header — used by both the vo-sense drop and the gate-drive return.
+  const yChan = (yBot + (yFb - 56)) / 2
 
   // Section header + a thin separator rule above the feedback band.
   ctx.strokeStyle = '#1e293b'
@@ -69,12 +73,14 @@ function drawFeedback(ctx: CanvasRenderingContext2D, a: FeedbackArgs) {
   label('FEEDBACK / COMPENSATOR', 12, yFb - 60, VIOLET, 'left', 'bold 11px ui-monospace, monospace')
 
   // Horizontal flow:  vo → divider → R1 → (−)op-amp(+)←Vref → Vc → PWM → gates.
-  const xDiv = W * 0.1 // sense divider
-  const xAmp = W * 0.34 // op-amp apex input plane
-  const ampOut = xAmp + 28
-  const xPwm = W * 0.52
+  // Spread the stages with real gaps so the Zf network above the op-amp and the
+  // R3/C3 branch below the input node never collide (tight at ~560 px wide).
+  const xDiv = W * 0.09 // sense divider
+  const xAmp = W * 0.42 // op-amp apex (pushed right to widen the input rail)
+  const ampOut = xAmp + 26
+  const xPwm = W * 0.62 // PWM (pushed right to open the Zf branch room)
   const yRail = yFb // inverting-input rail
-  const yFbBranch = yFb - 30 // feedback (Zf) rail, above the op-amp
+  const yFbBranch = yFb - 32 // feedback (Zf) rail, above the op-amp
 
   // small horizontal resistor symbol centered at (cx,cy) of width w
   const resH = (cx0: number, cy0: number, w: number, color = VIOLET) => {
@@ -94,97 +100,123 @@ function drawFeedback(ctx: CanvasRenderingContext2D, a: FeedbackArgs) {
     ctx.stroke()
   }
 
-  // --- vo sense tap: from the vo node down and left to the divider top ---
-  wire([
-    [xVo, yTop],
-    [xVo, yFb - 46],
-    [xDiv, yFb - 46],
-    [xDiv, yFb - 24],
-  ])
-  dot(xVo, yTop, 3, VIOLET)
-  label('vo sense', xDiv - 4, yFb - 50, '#94a3b8', 'left', small)
+  // --- vo sense: tap the vo node, drop through the clear channel, then run
+  // left to the top of the divider. Drawn in violet (a sense wire, distinct
+  // from the grey power rails it orthogonally crosses once). ---
+  ctx.strokeStyle = VIOLET
+  ctx.lineWidth = 1.4
+  ctx.beginPath()
+  ctx.moveTo(xVo, yTop)
+  ctx.lineTo(xVo, yChan)
+  ctx.lineTo(xDiv, yChan)
+  ctx.lineTo(xDiv, yFb - 24)
+  ctx.stroke()
+  dot(xVo, yTop, 3.5, VIOLET) // visible tap dot on the output rail
+  label('vo sense', xDiv + 4, yChan - 5, VIOLET, 'left', small)
 
-  // --- divider Rfb1/Rfb2 → fb node on the rail (fixed 2:1-ish for ~vo·Rfb2/(Rfb1+Rfb2)) ---
-  resH(xDiv, yFb - 16, 16)
+  // --- resistive divider Rfb1/Rfb2: vo-sense in at top → Rfb1 → fb node (to
+  // R1) → Rfb2 → ground. Two vertical resistor boxes, wires drawn between them
+  // so nothing floats. ---
+  const resV = (cy0: number, name: string) => {
+    ctx.strokeStyle = VIOLET
+    ctx.lineWidth = 1.6
+    ctx.strokeRect(xDiv - 5, cy0 - 9, 10, 18)
+    label(name, xDiv - 9, cy0 + 3, VIOLET, 'right', small)
+  }
+  // vo-sense already arrives at (xDiv, yFb-24); connect down through Rfb1.
   ctx.strokeStyle = VIOLET
   ctx.lineWidth = 1.5
   ctx.beginPath()
-  ctx.moveTo(xDiv, yFb - 11)
+  ctx.moveTo(xDiv, yFb - 24)
+  ctx.lineTo(xDiv, yFb - 23)
+  ctx.stroke()
+  resV(yFb - 14, 'Rfb1')
+  ctx.beginPath()
+  ctx.moveTo(xDiv, yFb - 5)
   ctx.lineTo(xDiv, yRail)
   ctx.stroke()
-  dot(xDiv, yRail, 3, VIOLET)
-  resH(xDiv, yRail + 14, 16)
+  dot(xDiv, yRail, 3, VIOLET) // fb node (feeds R1)
+  resV(yRail + 15, 'Rfb2')
   ctx.beginPath()
-  ctx.moveTo(xDiv, yRail + 19)
-  ctx.lineTo(xDiv, yRail + 30)
+  ctx.moveTo(xDiv, yRail + 24)
+  ctx.lineTo(xDiv, yRail + 31)
   ctx.stroke()
   ctx.strokeStyle = WIRE
-  ctx.beginPath()
-  ctx.moveTo(xDiv - 6, yRail + 30)
-  ctx.lineTo(xDiv + 6, yRail + 30)
+  ctx.beginPath() // ground tick
+  ctx.moveTo(xDiv - 6, yRail + 31)
+  ctx.lineTo(xDiv + 6, yRail + 31)
   ctx.stroke()
 
   if (net.kind === 'typeii' || net.kind === 'typeiii') {
-    // input rail: fb node → R1 → (−) input. Plenty of room now.
-    const xR1 = (xDiv + xAmp) / 2
-    wire([[xDiv, yRail], [xR1 - 12, yRail]])
-    resH(xR1, yRail, 24)
-    label('R1', xR1, yRail - 9, VIOLET, 'center', small)
-    const xIn = xAmp - 14
-    wire([[xR1 + 12, yRail], [xIn, yRail], [xIn, yFb - 6], [xAmp, yFb - 6]])
+    // input rail: fb node → R1 → input node → (−) op-amp input.
+    const xIn = xAmp - 16 // inverting-input node (left of the triangle)
+    const xR1 = (xDiv + xIn) / 2
+    wire([[xDiv, yRail], [xR1 - 13, yRail]])
+    resH(xR1, yRail, 26)
+    label('R1', xR1, yRail + 18, VIOLET, 'center', small) // label below the box
+    wire([[xR1 + 13, yRail], [xIn, yRail], [xIn, yFb - 6], [xAmp, yFb - 6]])
     dot(xIn, yRail, 2.5, VIOLET)
 
-    // Type III: R3–C3 series to ground, tapped between R1 and the op-amp so it
-    // sits clear of the op-amp's + / Vref labels (2nd zero/pole pair).
+    // Type III: R3–C3 series from the input node DOWN to ground (2nd zero/pole).
+    // Hangs well below the rail, clear of the op-amp + input / Vref caption.
     if (net.kind === 'typeiii') {
-      const xB = xR1 + 22
-      dot(xB, yRail, 2.5, VIOLET)
+      const xB = xIn
       ctx.strokeStyle = VIOLET
       ctx.lineWidth = 1.5
       ctx.beginPath()
       ctx.moveTo(xB, yRail)
-      ctx.lineTo(xB, yRail + 6)
+      ctx.lineTo(xB, yRail + 7)
       ctx.stroke()
-      ctx.strokeRect(xB - 5, yRail + 6, 10, 14) // R3 (vertical)
-      capH(xB, yRail + 28)
-      label('R3', xB - 9, yRail + 16, VIOLET, 'right', small)
-      label('C3', xB - 9, yRail + 31, VIOLET, 'right', small)
-      ctx.strokeStyle = VIOLET
+      ctx.strokeRect(xB - 5, yRail + 7, 10, 13) // R3 (vertical)
       ctx.beginPath()
       ctx.moveTo(xB, yRail + 20)
-      ctx.lineTo(xB, yRail + 22)
+      ctx.lineTo(xB, yRail + 24)
+      ctx.stroke()
+      capH(xB, yRail + 28) // C3 plates
+      ctx.beginPath()
+      ctx.moveTo(xB, yRail + 34)
+      ctx.lineTo(xB, yRail + 38)
       ctx.stroke()
       ctx.strokeStyle = WIRE
-      ctx.beginPath()
-      ctx.moveTo(xB - 6, yRail + 36)
-      ctx.lineTo(xB + 6, yRail + 36)
+      ctx.beginPath() // ground tick
+      ctx.moveTo(xB - 6, yRail + 38)
+      ctx.lineTo(xB + 6, yRail + 38)
       ctx.stroke()
+      // labels to the LEFT of the branch (clear of the op-amp + / Vref)
+      label('R3', xB - 9, yRail + 16, VIOLET, 'right', small)
+      label('C3', xB - 9, yRail + 31, VIOLET, 'right', small)
     }
 
     drawOpAmp(ctx, xAmp, yFb, wire, label)
 
-    // --- Zf feedback branch: (−) input → R2 — C1 series, C2 across, → output ---
-    const xR2 = xAmp - 2
-    const xC1 = ampOut - 6
-    wire([[xAmp, yFb - 6], [xAmp - 8, yFb - 6], [xAmp - 8, yFbBranch], [xC1 + 8, yFbBranch], [ampOut, yFbBranch], [ampOut, yFb]])
+    // --- Zf feedback branch on a wide rail above the op-amp: (−) input → R2 —
+    // C1 in series → output, with C2 across the whole branch on a higher rail.
+    // Components spaced out; labels sit in a row just below the branch rail. ---
+    const zfL = xIn // left end (the − input node, tapped up)
+    const zfR = ampOut + 30 // right end — extended right of the output for room
+    const xR2 = zfL + 16
+    const xC1 = zfR - 16
+    // branch rail: up from − input, across through R2 then C1, down to output
+    wire([[xIn, yFb - 6], [zfL, yFbBranch], [zfR, yFbBranch], [zfR, yFb - 6], [ampOut, yFb - 6]])
     resH(xR2, yFbBranch, 22)
-    label('R2', xR2, yFbBranch - 9, VIOLET, 'center', small)
     capH(xC1, yFbBranch)
-    label('C1', xC1, yFbBranch + 13, VIOLET, 'center', small)
-    // C2 across, on a higher rail
+    label('R2', xR2, yFbBranch - 9, VIOLET, 'center', small)
+    label('C1', xC1, yFbBranch - 9, VIOLET, 'center', small)
+    dot(zfR, yFb - 6, 2.5, VIOLET)
+    // C2 across, on a higher rail spanning the whole branch
     const yC2 = yFbBranch - 16
-    wire([[xAmp - 8, yFbBranch], [xAmp - 8, yC2], [xC1 + 8, yC2], [xC1 + 8, yFbBranch]])
-    capH((xAmp - 8 + xC1 + 8) / 2, yC2)
-    label('C2', (xAmp - 8 + xC1 + 8) / 2, yC2 - 8, VIOLET, 'center', small)
-    dot(ampOut, yFbBranch, 2.5, VIOLET)
+    wire([[zfL, yFbBranch], [zfL, yC2], [zfR, yC2], [zfR, yFbBranch]])
+    capH((zfL + zfR) / 2, yC2)
+    label('C2', (zfL + zfR) / 2, yC2 - 8, VIOLET, 'center', small)
 
-    label(`Vref ${ref.toFixed(2)} V`, xAmp + 14, yFb + 24, '#64748b', 'center', small)
+    // Vref + amp caption below the op-amp (clear of the R3/C3 branch on the left)
+    label(`Vref ${ref.toFixed(2)} V`, xAmp + 16, yFb + 22, '#64748b', 'left', small)
     label(
       net.kind === 'typeiii' ? 'Type III error amp' : 'Type II error amp',
-      xAmp + 14,
-      yFb + 38,
+      xAmp + 16,
+      yFb + 35,
       VIOLET,
-      'center',
+      'left',
       small,
     )
   } else {
@@ -223,21 +255,29 @@ function drawFeedback(ctx: CanvasRenderingContext2D, a: FeedbackArgs) {
     ctx.lineTo(x0 + 10, yFb - 17)
   }
   ctx.stroke()
-  // gate-drive (dashed) closes the loop: PWM → up → across to QH gate.
-  const yGate = yTop - 30
+  // gate-drive (dashed) closes the loop: PWM → up into the clear band above
+  // the feedback section → left along the margin channel → up the far-left
+  // margin → across the gate rail to QH, with a tap down to QL's gate. This
+  // keeps the gate drive entirely off the LC and the output rail.
+  const yGate = yTop - 30 // gate rail, above the power stage
+  const xMargin = 8 // far-left vertical channel
   ctx.strokeStyle = SKY
   ctx.lineWidth = 1.4
   ctx.setLineDash([4, 3])
   ctx.beginPath()
-  ctx.moveTo(xPwm + 22, yFb)
-  ctx.lineTo(xPwm + 22, yGate)
+  // PWM output up into the channel, then left to the margin, then up to the gate
+  // rail, then across to QH's gate. (QL is driven complementarily — labelled,
+  // not separately wired, to keep the gate drive off the power stage.)
+  ctx.moveTo(xPwm, yFb - 14)
+  ctx.lineTo(xPwm, yChan)
+  ctx.lineTo(xMargin, yChan)
+  ctx.lineTo(xMargin, yGate)
   ctx.lineTo(xHS, yGate)
-  ctx.lineTo(xHS, yTop - 11)
+  ctx.lineTo(xHS, yTop - 11) // down into QH's gate stub
   ctx.stroke()
   ctx.setLineDash([])
-  // Label sits on the vertical gate-drive riser, well right of the vo readout.
-  label('gate drive', xPwm + 26, yFb - 18, SKY, 'left', small)
-  label('(QL inverted)', xPwm + 26, yFb - 6, '#64748b', 'left', small)
+  // label on the top gate rail, left of QH where it's clear
+  label('gate drive (QL = Q̄H, complementary)', xMargin + 4, yGate - 5, SKY, 'left', small)
 
   // --- component VALUE legend row (keeps the schematic itself uncluttered) ---
   const vals = net.parts.map((p) => `${p.name} ${p.value}`).join('   ')
@@ -437,7 +477,10 @@ export function BuckScene() {
         }
         ctx.stroke()
         label(name, cx0, cy0 + 4, '#e2e8f0', 'center', 'bold 11px ui-monospace, monospace')
-        if (horiz) label(dlabel, cx0, cy0 - h / 2 - 13, SKY)
+        // duty label: high-side BELOW its box (gate top is reserved for the
+        // gate-drive wire; above-right collides with SW / the inductor label);
+        // low-side to the right of its gate stub.
+        if (horiz) label(dlabel, cx0, cy0 + h / 2 + 13, SKY)
         else label(dlabel, cx0 + w / 2 + 13, cy0 + 4, SKY, 'left')
       }
       fet(xHS, yTop, true, duty / 100, 'QH', `D = ${duty.toFixed(1)}%`)
@@ -450,7 +493,7 @@ export function BuckScene() {
         [xSW, yMid + 22],
         [xSW, yBot],
       ])
-      fet(xSW, yMid, false, 1 - duty / 100, 'QL', `${(100 - duty).toFixed(1)}%`)
+      fet(xSW, yMid, false, 1 - duty / 100, 'QL', `1−D = ${(100 - duty).toFixed(1)}%`)
       dot(xSW, yTop)
       label('SW', xSW - 10, yTop - 8, '#64748b', 'right')
 
@@ -582,7 +625,7 @@ export function BuckScene() {
       // vo tap → resistor divider → error amp (op-amp) with the live Type II/III
       // RC network → PWM → back up to the gate drive. Component values are
       // synthesized from the active controller's sliders (compensatorNetwork.ts).
-      drawFeedback(ctx, { W, H, yFb, xVo, yTop, xHS, net, ref: p.setpoint, wire, dot, label })
+      drawFeedback(ctx, { W, H, yFb, yBot, xVo, yTop, xHS, net, ref: p.setpoint, wire, dot, label })
 
       // ----- annotations -----
       label(`D·Vin = ${((duty / 100) * d.vin).toFixed(2)} V`, 12, 20, '#94a3b8', 'left')

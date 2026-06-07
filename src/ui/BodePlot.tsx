@@ -20,16 +20,16 @@ import { seriesColors } from './colors'
  * In dB, |L| = |C| + |G| — the C and G tabs literally add to give L.
  * The x-axis displays rad/s or Hz per the scenario (internally rad/s).
  */
-type Tab = 'D' | 'L' | 'T' | 'C' | 'G'
 type ChartTab = 'L' | 'T' | 'C' | 'G'
 
-const TABS: { id: Tab; label: string; hint: string }[] = [
-  { id: 'D', label: 'Diagram', hint: 'system block diagram, live signals' },
+const D_TAB = { id: 'D', label: 'Diagram', hint: 'system block diagram, live signals' }
+const LTI_TABS = [
   { id: 'L', label: 'L = C·G', hint: 'open loop + margins' },
   { id: 'T', label: 'T, S', hint: 'closed loop' },
   { id: 'C', label: 'C anatomy', hint: 'controller components' },
-  { id: 'G', label: 'G', hint: 'plant' },
 ]
+const NOTE_TAB = { id: 'note', label: 'No C(s)?', hint: "why the LTI views don't apply" }
+const G_TAB = { id: 'G', label: 'G', hint: 'plant' }
 
 interface Analysis extends FreqAnalysis {
   u0: number
@@ -50,13 +50,30 @@ export function BodePlot() {
   const ctl = useStore((s) => s.ctl)
   const setpoint = useStore((s) => s.setpoint)
   const dist = useStore((s) => s.dist)
-  const [tab, setTab] = useState<Tab>('L')
+  const [tab, setTab] = useState<string>('L')
 
   const scn = getScenario(scenarioId)
   const cdef = getController(controllerId)
-  // Nonlinear law (relay): the LTI views don't apply.
-  const isNote = cdef.response === null && (tab === 'L' || tab === 'T' || tab === 'C')
-  const isChart = tab !== 'D' && !isNote
+  // Nonlinear law: no L/T/C. The controller may supply its own analysis tabs
+  // (fuzzy: memberships, rules, surface); otherwise a "No C(s)?" explainer.
+  const isLinear = cdef.response !== null
+  const customTabs = !isLinear ? (cdef.analysisTabs ?? []) : []
+  const tabs = [
+    D_TAB,
+    ...(isLinear
+      ? LTI_TABS
+      : customTabs.length
+        ? customTabs.map((t) => ({ id: `ctl:${t.id}`, label: t.label, hint: t.hint }))
+        : [NOTE_TAB]),
+    G_TAB,
+  ]
+  // keep the selected tab valid across controller/scenario switches
+  const tabIds = tabs.map((t) => t.id).join()
+  useEffect(() => {
+    if (!tabs.some((t) => t.id === tab)) setTab(isLinear ? 'L' : (tabs[1]?.id ?? 'G'))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabIds, tab, isLinear])
+  const isChart = tab === 'G' || (isLinear && (tab === 'L' || tab === 'T' || tab === 'C'))
 
   const data: Analysis = useMemo(() => {
     const eq = scn.plant.equilibrium(setpoint, dist)
@@ -121,14 +138,14 @@ export function BodePlot() {
 
   // Push new data into the existing chart when params move.
   useEffect(() => {
-    if (tab === 'D' || isNote) return
-    chartRef.current?.chart.setData(chartData(tab, data))
-  }, [data, tab, isNote])
+    if (!isChart) return
+    chartRef.current?.chart.setData(chartData(tab as ChartTab, data))
+  }, [data, tab, isChart])
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-1 px-1 pt-1">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.id}
             className={`rounded px-2 py-0.5 font-mono text-[11px] ${
@@ -143,7 +160,7 @@ export function BodePlot() {
           </button>
         ))}
         <span className="ml-2 hidden text-[10px] text-slate-500 xl:inline">
-          {TABS.find((t) => t.id === tab)?.hint}
+          {tabs.find((t) => t.id === tab)?.hint}
         </span>
       </div>
       {tab === 'D' ? (
@@ -152,16 +169,33 @@ export function BodePlot() {
         ) : (
           <BlockDiagram />
         )
-      ) : isNote ? (
+      ) : tab === 'note' ? (
         <NonlinearNote label={cdef.label} />
-      ) : (
+      ) : tab.startsWith('ctl:') ? (
+        <CustomTab key={tab} tab={tab} customTabs={customTabs} />
+      ) : isChart ? (
         <>
           <div ref={wrapRef} className="min-h-0 flex-1" />
           <Footer tab={tab as ChartTab} data={data} setpoint={setpoint} scnY={scn.y} />
         </>
-      )}
+      ) : null}
     </div>
   )
+}
+
+function CustomTab({
+  tab,
+  customTabs,
+}: {
+  tab: string
+  customTabs: { id: string; View: React.ComponentType }[]
+}) {
+  const t = customTabs.find((c) => `ctl:${c.id}` === tab)
+  return t ? (
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <t.View />
+    </div>
+  ) : null
 }
 
 function NonlinearNote({ label }: { label: string }) {
